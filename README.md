@@ -16,3 +16,10 @@ A macOS/iOS-style Dynamic Island for Windows, focused purely on CBR (Bank of Rus
 ```
 dotnet publish -c Release
 ```
+
+## Contributors
+
+- [kiki-koteyka](https://github.com/kiki-koteyka)
+- [kikikoteyka-dev](https://github.com/kikikoteyka-dev)
+- [Yagon-Don](https://github.com/Yagon-Don)
+- [Claude](https://github.com/claude) - AI pair programmer
