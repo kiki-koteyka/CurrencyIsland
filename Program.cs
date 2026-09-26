@@ -1,0 +1,2116 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text.Json;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Threading;
+using System.Linq;
+using Ellipse = System.Windows.Shapes.Ellipse;
+using ShapePath = System.Windows.Shapes.Path;
+using Line = System.Windows.Shapes.Line;
+using Forms = System.Windows.Forms;
+using Drawing = System.Drawing;
+
+namespace DynamicIsland;
+
+public sealed class PositionState
+{
+    public double Left { get; set; } = double.NaN;
+    public double Top { get; set; } = double.NaN;
+    public string AnchorH { get; set; } = "Right";
+    public string AnchorV { get; set; } = "Top";
+}
+
+public sealed class IslandWindow : Window
+{
+    private const double CollapsedWidth = 130;
+    private const double CollapsedHeight = 34;
+    private const double ExpandedWidth = 380;
+    // Shorter than the original DynamicIsland's 210 - this fork's tallest
+    // tab (the chart, legend+canvas+dates) only needs ~170px, and the fixed
+    // OS window is sized once for whichever tab needs the most room. Content
+    // is vertically centered within it, so leaving the old 210 here just
+    // meant a big dead gap above and below on every tab.
+    private const double ExpandedHeight = 178;
+
+    // Per-tab expanded heights - the table only needs ~95px of content, the
+    // chart needs ~170px. Index matches CurrencyTabIndex/ChartTabIndex.
+    // ExpandedHeight above stays the conservative MAX, still used by the
+    // pre-expand corner/growth-alignment math (deciding which corner to grow
+    // from before anything has actually resized) so that math never
+    // under-estimates how much room the pill might need.
+    private static readonly double[] TabExpandedHeight = { 138, 178 };
+    private const double EdgeMargin = 0;
+    private const double TopEdgeMargin = 0;
+    private const double BottomEdgeMargin = 0;
+    private const double SnapThreshold = 14;
+    private const int TabCount = 2;
+    private const int CurrencyTabIndex = 0;
+    private const int ChartTabIndex = 1;
+    private static readonly TimeSpan CurrencyCacheLifetime = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan AnimDuration = TimeSpan.FromMilliseconds(220);
+
+    private readonly Border _shell;
+    private Grid _content = null!;
+    private ContentControl _collapsedIcon = null!;
+    private readonly ContentControl _tabHost = new();
+    private readonly Ellipse[] _dots = new Ellipse[TabCount];
+    private readonly FrameworkElement[] _tabViews = new FrameworkElement[TabCount];
+    private readonly CbrRatesProvider _rates = new();
+    private const int TableDays = 3;
+    private readonly TextBlock[] _tableHeaderTexts = new TextBlock[TableDays];
+    private readonly TextBlock[] _usdValueTexts = new TextBlock[TableDays];
+    private readonly TextBlock[] _eurValueTexts = new TextBlock[TableDays];
+    private readonly TextBlock[] _cnyValueTexts = new TextBlock[TableDays];
+    private DateTime _historyFetchedAt = DateTime.MinValue;
+    private List<CbrHistoryPoint>? _latestHistory;
+    private readonly string _stateFile;
+    private PositionState _pos = new();
+    private Border _settingsButton = null!;
+    private int _currentTab;
+    private bool _tabAnimating;
+    private bool _forcedHidden;
+    private bool _isExpanded;
+    private bool _dragging;
+    private bool _isMouseOverShell;
+    private bool _resizingTab;
+    private bool _dragCandidate;
+    private bool _positionUpdateInProgress;
+    private bool _snapped;
+    private bool _snapArmed;
+    private Point _dragMouseStart;
+    private Point _dragWindowStart;
+    private HorizontalAlignment _dragBaseH;
+    private VerticalAlignment _dragBaseV;
+
+    public IslandWindow()
+    {
+        var folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CurrencyIsland");
+        Directory.CreateDirectory(folder);
+        _stateFile = Path.Combine(folder, "position.json");
+        LoadPosition();
+        _chartCrosshairHover = AppSettings.Load().ChartCrosshairHover;
+
+        WindowStyle = WindowStyle.None;
+        AllowsTransparency = true;
+        Background = Brushes.Transparent;
+        Topmost = true;
+        ShowInTaskbar = false;
+        ResizeMode = ResizeMode.NoResize;
+        ShowActivated = false;
+        WindowStartupLocation = WindowStartupLocation.Manual;
+        SizeToContent = SizeToContent.Manual;
+
+        // The OS window is fixed at the expanded footprint and NEVER resizes.
+        // Resizing a layered window under the cursor triggers spurious
+        // MouseLeave/MouseEnter, which turned into an Expand/Collapse feedback
+        // loop (the reported jitter). All grow/shrink motion happens on the
+        // inner _shell instead, which is cheap and doesn't touch the HWND.
+        Width = ExpandedWidth;
+        Height = ExpandedHeight;
+        HorizontalContentAlignment = HorizontalAlignment.Right;
+        VerticalContentAlignment = VerticalAlignment.Top;
+
+        RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.HighQuality);
+        UseLayoutRounding = true;
+
+        _shell = new Border
+        {
+            // Plain flat dark gradient - an earlier "glossy sheen" (a bright
+            // white gradient stop at the top edge) was mistaken for a stray
+            // shadow/glow artifact and is gone for good, not just muted.
+            Background = new LinearGradientBrush(
+                new GradientStopCollection
+                {
+                    new GradientStop(Color.FromArgb(248, 32, 32, 35), 0),
+                    new GradientStop(Color.FromArgb(248, 8, 8, 10), 1)
+                },
+                new Point(0, 0), new Point(0, 1)),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(30, 255, 255, 255)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(CollapsedHeight / 2),
+            Width = CollapsedWidth,
+            Height = CollapsedHeight,
+            ClipToBounds = true,
+            SnapsToDevicePixels = true
+        };
+        RenderOptions.SetBitmapScalingMode(_shell, BitmapScalingMode.HighQuality);
+        // Window.HorizontalContentAlignment/VerticalContentAlignment does not
+        // reliably reposition Content for a WindowStyle=None+AllowsTransparency
+        // window - it silently stays centered regardless of the property value.
+        // So Content is a stretching Grid, and _shell is positioned within it
+        // via its OWN HorizontalAlignment/VerticalAlignment (a plain
+        // FrameworkElement arrange, which always works). See SetAnchor().
+        // No Effect here (DropShadowEffect was tried on contentHost for a
+        // premium floating look) - any Effect on this Grid forces WPF to
+        // rasterize it into an intermediate bitmap, and that intermediate
+        // surface doesn't reliably preserve per-pixel alpha when the parent
+        // Window is AllowsTransparency=true. The result was a solid
+        // white/opaque rectangle showing through instead of the transparent
+        // background, reproduced across two different rendering
+        // configurations - not worth it for a shadow.
+        var contentHost = new Grid();
+        contentHost.Children.Add(_shell);
+        Content = contentHost;
+        SetAnchor(HorizontalContentAlignment, VerticalContentAlignment);
+
+        BuildInnerContent();
+
+        // A quick pass of the cursor over the shell can enter AND leave
+        // entirely within a single resize's guard window - that Leave event
+        // was simply swallowed (guarded, same as a phantom one), and since
+        // the cursor has already left, no further Leave event was ever going
+        // to arrive to retry it, leaving the pill stuck open. _isMouseOverShell
+        // tracks the real, un-guarded hover state on every Enter/Leave; once
+        // a resize's guard clears (see ResizeShellAndWindow), it's checked
+        // against _isExpanded and reconciled - so a hover change that arrived
+        // mid-resize still takes effect once it's safe to act on it.
+        _shell.MouseEnter += (_, _) =>
+        {
+            _isMouseOverShell = true;
+            if (!_dragging && !_resizingTab) Expand();
+        };
+        _shell.MouseLeave += (_, _) =>
+        {
+            _isMouseOverShell = false;
+            if (!_dragging && !_resizingTab) Collapse();
+        };
+        _shell.MouseLeftButtonDown += OnShellMouseDown;
+        _shell.MouseMove += OnShellMouseMove;
+        _shell.MouseLeftButtonUp += OnShellMouseUp;
+        _shell.MouseWheel += OnShellMouseWheel;
+
+        Loaded += (_, _) => ApplyPosition();
+
+        // RefreshHistoryIfStale() used to only ever get CALLED from hover/tab-
+        // switch handlers - so a pill left sitting collapsed for hours (the
+        // normal way a desktop widget like this actually gets used) never
+        // refreshed at all, no matter how short CurrencyCacheLifetime was.
+        // This ticks on its own, independent of any user interaction, so the
+        // rate actually gets re-checked on a real clock instead of only when
+        // someone happens to touch the pill.
+        _currencyRefreshTimer = new DispatcherTimer { Interval = CurrencyCacheLifetime };
+        _currencyRefreshTimer.Tick += (_, _) => RefreshHistoryIfStale();
+        _currencyRefreshTimer.Start();
+    }
+
+    private readonly DispatcherTimer _currencyRefreshTimer;
+
+    private void BuildInnerContent()
+    {
+        // Top/bottom margins equal (10/10) - they used to be 10/6, and with
+        // the settings button no longer eating a row out of this Grid (see
+        // below), that leftover asymmetry alone was enough to shift row 0's
+        // vertical center - and everything centered in it, including the
+        // tab dots - a couple pixels off the capsule's true center.
+        var root = new Grid { Margin = new Thickness(18, 10, 14, 10), Opacity = 0, Visibility = Visibility.Hidden };
+        _content = root;
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+        _tabHost.HorizontalContentAlignment = HorizontalAlignment.Left;
+        _tabHost.VerticalContentAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(_tabHost, 0);
+        Grid.SetRow(_tabHost, 0);
+        root.Children.Add(_tabHost);
+
+        // A Grid of fixed-height rows, not a StackPanel - at 125% DPI, 6 DIP
+        // dots are 7.5 physical pixels, a fractional value that can't land
+        // on a whole pixel. A StackPanel's cumulative vertical offsets meant
+        // each dot's fractional remainder differed slightly from the last,
+        // so their anti-aliased edges rounded to different sub-pixel
+        // horizontal positions - a visible diagonal drift even though every
+        // dot's logical HorizontalAlignment was identically Center. Uniform
+        // fixed rows give every dot the exact same arrange rectangle.
+        var dotsPanel = new Grid
+        {
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(10, 0, 0, 0),
+            UseLayoutRounding = true,
+            SnapsToDevicePixels = true
+        };
+        for (var i = 0; i < TabCount; i++)
+        {
+            dotsPanel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(14) });
+            var dot = new Ellipse
+            {
+                Width = 6,
+                Height = 6,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                SnapsToDevicePixels = true,
+                UseLayoutRounding = true
+            };
+            Grid.SetRow(dot, i);
+            _dots[i] = dot;
+            dotsPanel.Children.Add(dot);
+        }
+        Grid.SetColumn(dotsPanel, 1);
+        Grid.SetRow(dotsPanel, 0);
+        root.Children.Add(dotsPanel);
+
+        // Lives directly in shellRoot (below), NOT in root - root's own
+        // Margin is tuned for the tab content's breathing room (asymmetric
+        // left/right on purpose) and used to also stretch a Grid row
+        // specifically to fit this button, which pushed root's content area
+        // off-center vertically as a side effect. An equal 14/14 margin
+        // here, measured straight from the capsule's real edge, is what
+        // actually makes the corner look symmetric.
+        // shellRoot has no opacity/visibility gating of its own (root does,
+        // for the tab content) - moving this out of root for the corner-
+        // margin fix meant it was no longer hidden by root's Opacity=0/
+        // Visibility=Hidden default, so it stayed visible (and badly
+        // clipped) even in the collapsed pill. Starts hidden here; Expand()/
+        // Collapse()/CollapseFast() toggle it explicitly alongside _content.
+        var settingsButton = new Border
+        {
+            Width = 26,
+            Height = 26,
+            CornerRadius = new CornerRadius(13),
+            Background = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(0, 0, 14, 14),
+            Opacity = 0,
+            Visibility = Visibility.Hidden,
+            Cursor = Cursors.Hand,
+            Child = new TextBlock
+            {
+                Text = "",
+                FontFamily = new FontFamily("Segoe Fluent Icons"),
+                FontSize = 13,
+                Foreground = new SolidColorBrush(Color.FromArgb(190, 255, 255, 255)),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            }
+        };
+        settingsButton.MouseEnter += (_, _) => settingsButton.Background = new SolidColorBrush(Color.FromArgb(75, 255, 255, 255));
+        settingsButton.MouseLeave += (_, _) => settingsButton.Background = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));
+        _settingsButton = settingsButton;
+        settingsButton.MouseLeftButtonDown += (_, e) =>
+        {
+            e.Handled = true; // stop this bubbling to _shell's own MouseLeftButtonDown, which starts a drag
+            SettingsRequested?.Invoke();
+        };
+        _tabViews[CurrencyTabIndex] = BuildRatesView();
+        _tabViews[ChartTabIndex] = BuildChartView();
+
+        _collapsedIcon = new ContentControl
+        {
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false
+        };
+
+        var shellRoot = new Grid();
+        shellRoot.Children.Add(_collapsedIcon);
+        shellRoot.Children.Add(root);
+        shellRoot.Children.Add(settingsButton);
+
+        _shell.Child = shellRoot;
+        SetTab(0);
+    }
+
+    private static readonly FontFamily LabelFont = new("Segoe UI Semibold");
+    private static readonly FontFamily ValueFont = new("Consolas");
+
+    // A little table: a caption reading "Курс ЦБ на" sits above the currency
+    // column, and the two value columns are headed by the actual dates they
+    // cover (not "Вчера"/"Сегодня") - so it doubles as the "as of" date this
+    // used to show in a separate footer line, without spending extra rows.
+    private FrameworkElement BuildRatesView()
+    {
+        // Top-anchored, not centered - the settings gear is a fixed 26px
+        // circle pinned to the shell's own bottom-right corner regardless of
+        // which tab is showing, and centering this short table in the
+        // (also short) table-tab window put the CNY row's rightmost value
+        // right under it. Hugging the top instead keeps the whole table
+        // clear of that reserved corner. See TabExpandedHeight.
+        var grid = new Grid { VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 4, 0, 0) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        for (var i = 0; i < TableDays; i++) grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(72) });
+        for (var i = 0; i < 4; i++) grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var dimHeader = new SolidColorBrush(Color.FromArgb(120, 235, 235, 240));
+        var captionText = new TextBlock
+        {
+            Text = "Курс ЦБ на", FontSize = 10, FontFamily = LabelFont, Foreground = dimHeader,
+            VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 3)
+        };
+        Grid.SetRow(captionText, 0);
+        Grid.SetColumn(captionText, 0);
+        grid.Children.Add(captionText);
+
+        for (var d = 0; d < TableDays; d++)
+        {
+            var header = new TextBlock
+            {
+                FontSize = 10, FontFamily = LabelFont, Foreground = dimHeader,
+                HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 0, 0, 3)
+            };
+            Grid.SetRow(header, 0);
+            Grid.SetColumn(header, d + 1);
+            _tableHeaderTexts[d] = header;
+            grid.Children.Add(header);
+        }
+
+        AddCurrencyRow(grid, 1, "$", UsdAccent, _usdValueTexts);
+        AddCurrencyRow(grid, 2, "€", EurAccent, _eurValueTexts);
+        AddCurrencyRow(grid, 3, "¥", CnyAccent, _cnyValueTexts);
+
+        return grid;
+    }
+
+    private static void AddCurrencyRow(Grid grid, int row, string symbol, Color accent, TextBlock[] valueTexts)
+    {
+        // A single colored currency glyph replaces the old dot+"USD" pair -
+        // same information (which line/color this row is), a lot less
+        // horizontal space spent on it.
+        var labelRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 3, 0, 3) };
+        labelRow.Children.Add(new TextBlock
+        {
+            Text = symbol, FontSize = 13, FontWeight = FontWeights.Bold, FontFamily = ValueFont,
+            Foreground = new SolidColorBrush(accent),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        Grid.SetRow(labelRow, row);
+        Grid.SetColumn(labelRow, 0);
+        grid.Children.Add(labelRow);
+
+        for (var d = 0; d < TableDays; d++)
+        {
+            // The most recent (rightmost) day is the only one in full white -
+            // the two before it fade progressively dimmer, so the eye lands
+            // on "today" first without the older columns looking like dead
+            // filler.
+            var isLatest = d == TableDays - 1;
+            var text = new TextBlock
+            {
+                FontSize = isLatest ? 14 : 13,
+                FontWeight = FontWeights.SemiBold,
+                FontFamily = ValueFont,
+                Foreground = isLatest ? Brushes.White : new SolidColorBrush(Color.FromArgb((byte)(90 + d * 40), 235, 235, 240)),
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, d == TableDays - 1 ? 0 : 4, 0)
+            };
+            Grid.SetRow(text, row);
+            Grid.SetColumn(text, d + 1);
+            grid.Children.Add(text);
+            valueTexts[d] = text;
+        }
+    }
+
+    private async void RefreshHistoryIfStale()
+    {
+        if (DateTime.UtcNow - _historyFetchedAt < CurrencyCacheLifetime) return;
+
+        var points = await _rates.FetchHistoryAsync(ChartDays);
+        if (points.Count == 0) return;
+
+        _historyFetchedAt = DateTime.UtcNow;
+        _latestHistory = points;
+        ApplyHistoryToViews();
+    }
+
+    private void ApplyHistoryToViews()
+    {
+        if (_latestHistory is not { Count: > 0 } points) return;
+
+        var tableSlice = points.Count >= TableDays ? points.Skip(points.Count - TableDays).ToList() : points;
+        var pad = TableDays - tableSlice.Count;
+        for (var d = 0; d < TableDays; d++)
+        {
+            if (d < pad)
+            {
+                _tableHeaderTexts[d].Text = "";
+                _usdValueTexts[d].Text = "";
+                _eurValueTexts[d].Text = "";
+                _cnyValueTexts[d].Text = "";
+                continue;
+            }
+
+            var p = tableSlice[d - pad];
+            _tableHeaderTexts[d].Text = p.Date.ToString("dd.MM");
+            _usdValueTexts[d].Text = $"{p.UsdRub:0.0000}";
+            _eurValueTexts[d].Text = $"{p.EurRub:0.0000}";
+            _cnyValueTexts[d].Text = $"{p.CnyRub:0.0000}";
+        }
+
+        UpdateChartVisual(points);
+
+        if (_currentTab == CurrencyTabIndex || _currentTab == ChartTabIndex)
+            _collapsedIcon.Content = BuildCollapsedIcon(_currentTab);
+    }
+
+    // A 5-day trend line per currency, normalized to its OWN min/max (not a
+    // shared ruble scale - USD/EUR/CNY sit at wildly different absolute
+    // values, so a shared axis would flatten CNY to a barely-visible sliver
+    // at the bottom). Normalizing independently shows each currency's own
+    // shape of movement, which is what "is it trending up or down" actually
+    // needs - not a literal ruler between them. Smoothed (Catmull-Rom into
+    // cubic beziers) with a soft gradient fill under each curve, per-point
+    // markers and a value callout on the latest point - the plain straight-
+    // line/no-numbers version read as a placeholder, not a finished chart.
+    private const int ChartDays = 5;
+    private const int SeriesCount = 3;
+    private const double ChartWidth = 300;
+    private const double ChartHeight = 116;
+    private const double ChartLabelGutter = 40; // reserved on the right for value callouts
+    private const double ChartPlotWidth = ChartWidth - ChartLabelGutter;
+
+    private readonly ShapePath[] _seriesFill = new ShapePath[SeriesCount];
+    private readonly ShapePath[] _seriesLine = new ShapePath[SeriesCount];
+    private readonly Ellipse[][] _seriesMarkers = new Ellipse[SeriesCount][];
+    private readonly TextBlock[] _seriesValueLabel = new TextBlock[SeriesCount];
+    private readonly TextBlock[] _chartDateLabels = new TextBlock[ChartDays];
+    private Line _chartTodayGuide = null!;
+    private Line _chartHoverGuide = null!;
+    private Canvas _chartCanvas = null!;
+    private Border _chartTooltip = null!;
+    private TextBlock _tooltipDate = null!;
+    private readonly TextBlock[] _tooltipValues = new TextBlock[SeriesCount];
+    private readonly Border[] _hoverChips = new Border[SeriesCount];
+    private readonly TextBlock[] _hoverChipTexts = new TextBlock[SeriesCount];
+    private readonly List<Point>[] _seriesPoints = new List<Point>[SeriesCount];
+    private bool _chartCrosshairHover;
+
+    private Color[] SeriesAccents => new[] { UsdAccent, EurAccent, CnyAccent };
+
+    public void SetChartHoverStyle(bool crosshair)
+    {
+        _chartCrosshairHover = crosshair;
+        // Switching styles mid-hover would leave the other style's elements
+        // stuck visible until the next mouse move - just hide everything
+        // both styles could have shown and let the next hover redraw fresh.
+        _chartTooltip.Visibility = Visibility.Hidden;
+        foreach (var chip in _hoverChips) chip.Visibility = Visibility.Hidden;
+        _chartHoverGuide.Visibility = Visibility.Hidden;
+        SetHoveredMarkerIndex(-1);
+    }
+
+    private FrameworkElement BuildChartView()
+    {
+        var root = new Grid { Width = ChartWidth, VerticalAlignment = VerticalAlignment.Center };
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(ChartHeight) });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var legend = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 7) };
+        AddLegendItem(legend, "USD", UsdAccent);
+        AddLegendItem(legend, "EUR", EurAccent);
+        AddLegendItem(legend, "CNY", CnyAccent);
+        Grid.SetRow(legend, 0);
+        root.Children.Add(legend);
+
+        var canvas = new Canvas { Width = ChartWidth, Height = ChartHeight, ClipToBounds = false, Background = Brushes.Transparent };
+        _chartCanvas = canvas;
+        Grid.SetRow(canvas, 1);
+
+        // Two very faint horizontal guides purely for depth/premium feel -
+        // not calibrated to any value, just breaks up the empty background.
+        for (var g = 1; g <= 2; g++)
+        {
+            canvas.Children.Add(new Line
+            {
+                X1 = 0, X2 = ChartPlotWidth,
+                Y1 = ChartHeight * g / 3.0, Y2 = ChartHeight * g / 3.0,
+                Stroke = new SolidColorBrush(Color.FromArgb(18, 255, 255, 255)),
+                StrokeThickness = 1
+            });
+        }
+
+        _chartTodayGuide = new Line
+        {
+            Y1 = 0, Y2 = ChartHeight,
+            Stroke = new SolidColorBrush(Color.FromArgb(22, 255, 255, 255)),
+            StrokeThickness = 1,
+            StrokeDashArray = new DoubleCollection { 2, 2 }
+        };
+        canvas.Children.Add(_chartTodayGuide);
+
+        _chartHoverGuide = new Line
+        {
+            Y1 = 0, Y2 = ChartHeight,
+            Stroke = new SolidColorBrush(Color.FromArgb(90, 255, 255, 255)),
+            StrokeThickness = 1,
+            Visibility = Visibility.Hidden,
+            IsHitTestVisible = false
+        };
+        canvas.Children.Add(_chartHoverGuide);
+
+        var accents = SeriesAccents;
+        for (var s = 0; s < SeriesCount; s++)
+        {
+            var accent = accents[s];
+            _seriesFill[s] = new ShapePath
+            {
+                Fill = new LinearGradientBrush(
+                    new GradientStopCollection
+                    {
+                        new GradientStop(Color.FromArgb(70, accent.R, accent.G, accent.B), 0),
+                        new GradientStop(Color.FromArgb(0, accent.R, accent.G, accent.B), 1)
+                    },
+                    new Point(0, 0), new Point(0, 1))
+            };
+            canvas.Children.Add(_seriesFill[s]);
+        }
+        for (var s = 0; s < SeriesCount; s++)
+        {
+            var accent = accents[s];
+            _seriesLine[s] = new ShapePath
+            {
+                Stroke = new SolidColorBrush(accent),
+                StrokeThickness = 2.2,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round
+            };
+            canvas.Children.Add(_seriesLine[s]);
+
+            _seriesMarkers[s] = new Ellipse[ChartDays];
+            for (var d = 0; d < ChartDays; d++)
+            {
+                var marker = new Ellipse
+                {
+                    Width = 5.5, Height = 5.5,
+                    Fill = new SolidColorBrush(accent),
+                    Stroke = new SolidColorBrush(Color.FromArgb(248, 12, 12, 14)),
+                    StrokeThickness = 1.2,
+                    Visibility = Visibility.Hidden
+                };
+                _seriesMarkers[s][d] = marker;
+                canvas.Children.Add(marker);
+            }
+
+            _seriesValueLabel[s] = new TextBlock
+            {
+                FontSize = 10.5, FontWeight = FontWeights.Bold, FontFamily = ValueFont,
+                Foreground = new SolidColorBrush(accent)
+            };
+            canvas.Children.Add(_seriesValueLabel[s]);
+        }
+
+        // Value/marker callout for the point nearest the cursor - hovering
+        // (there's no click target, just a plain hover-follow like every
+        // real charting app) shows the exact date and all three prices for
+        // that day instead of forcing a guess from the curve's shape alone.
+        _chartTooltip = new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(26, 26, 29)),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(70, 255, 255, 255)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(9, 6, 10, 7),
+            Visibility = Visibility.Hidden,
+            IsHitTestVisible = false
+        };
+        var tooltipStack = new StackPanel();
+        _tooltipDate = new TextBlock
+        {
+            FontSize = 11, FontFamily = LabelFont, FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Color.FromArgb(190, 235, 235, 240)),
+            Margin = new Thickness(0, 0, 0, 2)
+        };
+        tooltipStack.Children.Add(_tooltipDate);
+        tooltipStack.Children.Add(new Border
+        {
+            Height = 1, Background = new SolidColorBrush(Color.FromArgb(35, 255, 255, 255)),
+            Margin = new Thickness(0, 0, 0, 3)
+        });
+        var accents2 = SeriesAccents;
+        var seriesSymbols = new[] { "$", "€", "¥" };
+        for (var s = 0; s < SeriesCount; s++)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0.5, 0, 0.5) };
+            row.Children.Add(new TextBlock
+            {
+                Text = seriesSymbols[s], FontSize = 13, FontWeight = FontWeights.Bold, FontFamily = ValueFont,
+                Foreground = new SolidColorBrush(accents2[s]),
+                Margin = new Thickness(0, 0, 3, 0), VerticalAlignment = VerticalAlignment.Center
+            });
+            _tooltipValues[s] = new TextBlock
+            {
+                FontSize = 12.5, FontFamily = ValueFont, FontWeight = FontWeights.SemiBold,
+                Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center
+            };
+            row.Children.Add(_tooltipValues[s]);
+            tooltipStack.Children.Add(row);
+        }
+        _chartTooltip.Child = tooltipStack;
+        canvas.Children.Add(_chartTooltip);
+
+        // Variant E ("crosshair") - no box at all, just three small colored
+        // chips sitting right next to each line's own point. Built here
+        // alongside the tooltip box; OnChartCanvasMouseMove shows whichever
+        // one _chartCrosshairHover currently points to and keeps the other
+        // hidden.
+        var hoverChipSymbols = new[] { "$", "€", "¥" };
+        for (var s = 0; s < SeriesCount; s++)
+        {
+            var chipRow = new StackPanel { Orientation = Orientation.Horizontal };
+            chipRow.Children.Add(new TextBlock
+            {
+                Text = hoverChipSymbols[s],
+                FontSize = 10, FontFamily = ValueFont, FontWeight = FontWeights.Bold,
+                Foreground = new SolidColorBrush(Color.FromRgb(12, 12, 14)),
+                Margin = new Thickness(0, 0, 3, 0),
+                Opacity = 0.75
+            });
+            _hoverChipTexts[s] = new TextBlock
+            {
+                FontSize = 10, FontFamily = ValueFont, FontWeight = FontWeights.Bold,
+                Foreground = new SolidColorBrush(Color.FromRgb(12, 12, 14))
+            };
+            chipRow.Children.Add(_hoverChipTexts[s]);
+            _hoverChips[s] = new Border
+            {
+                Background = new SolidColorBrush(accents2[s]),
+                CornerRadius = new CornerRadius(9),
+                Padding = new Thickness(6, 2, 6, 2),
+                Visibility = Visibility.Hidden,
+                IsHitTestVisible = false,
+                Child = chipRow
+            };
+            canvas.Children.Add(_hoverChips[s]);
+        }
+
+        canvas.MouseMove += OnChartCanvasMouseMove;
+        canvas.MouseLeave += (_, _) =>
+        {
+            _chartHoverGuide.Visibility = Visibility.Hidden;
+            _chartTooltip.Visibility = Visibility.Hidden;
+            foreach (var chip in _hoverChips) chip.Visibility = Visibility.Hidden;
+            SetHoveredMarkerIndex(-1);
+        };
+
+        root.Children.Add(canvas);
+
+        // Date labels live in their own Canvas, positioned at the EXACT same
+        // X as each point on the plot above (not spread across 5 equal Grid
+        // columns) - the old Grid-column approach edge-aligned the first/
+        // last labels but center-aligned the middle ones inside differently
+        // sized effective slots, so the gaps between labels weren't uniform
+        // and didn't line up with what they were labeling either.
+        var dateCanvas = new Canvas { Width = ChartPlotWidth, Height = 12, Margin = new Thickness(0, 6, ChartLabelGutter, 0) };
+        for (var i = 0; i < ChartDays; i++)
+        {
+            var label = new TextBlock
+            {
+                FontSize = 9,
+                FontFamily = LabelFont,
+                Foreground = new SolidColorBrush(Color.FromArgb(120, 235, 235, 240))
+            };
+            _chartDateLabels[i] = label;
+            dateCanvas.Children.Add(label);
+        }
+        Grid.SetRow(dateCanvas, 2);
+        root.Children.Add(dateCanvas);
+
+        return root;
+    }
+
+    private static void AddLegendItem(Panel parent, string label, Color accent)
+    {
+        var item = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(parent.Children.Count == 0 ? 0 : 10, 0, 0, 0) };
+        item.Children.Add(new Ellipse { Width = 6, Height = 6, Fill = new SolidColorBrush(accent), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 0) });
+        item.Children.Add(new TextBlock
+        {
+            Text = label, FontSize = 9, FontFamily = LabelFont,
+            Foreground = new SolidColorBrush(Color.FromArgb(150, 235, 235, 240)),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        parent.Children.Add(item);
+    }
+
+    private void UpdateChartVisual(List<CbrHistoryPoint> points)
+    {
+        var n0 = points.Count;
+        for (var i = 0; i < ChartDays; i++)
+        {
+            var label = _chartDateLabels[i];
+            if (i >= n0) { label.Text = ""; continue; }
+
+            label.Text = points[i].Date.ToString("dd.MM");
+            var x = n0 <= 1 ? 0 : i * (ChartPlotWidth / (n0 - 1));
+            // Measure to center each label under its actual point instead of
+            // guessing a fixed width - "19.09" and a lone "9.09"-shaped date
+            // aren't the same pixel width, and centering on the true
+            // measured width is what makes the spacing look even.
+            label.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            var half = label.DesiredSize.Width / 2;
+            Canvas.SetLeft(label, Math.Clamp(x - half, 0, ChartPlotWidth - label.DesiredSize.Width));
+        }
+
+        var endY = new double[SeriesCount];
+        endY[0] = SetSeries(0, points.Select(p => p.UsdRub).ToList());
+        endY[1] = SetSeries(1, points.Select(p => p.EurRub).ToList());
+        endY[2] = SetSeries(2, points.Select(p => p.CnyRub).ToList());
+
+        // All three series are normalized to their OWN range, so "today"
+        // often lands near the top (or bottom) of all three at once - their
+        // value labels would land on top of each other. Spread any that are
+        // within a label's height of each other, ordered by their natural Y,
+        // instead of leaving them to overlap into unreadable mush.
+        const double minGap = 13;
+        var order = new[] { 0, 1, 2 };
+        Array.Sort(order, (a, b) => endY[a].CompareTo(endY[b]));
+        for (var i = 1; i < order.Length; i++)
+        {
+            var prev = order[i - 1];
+            var cur = order[i];
+            if (endY[cur] - endY[prev] < minGap) endY[cur] = endY[prev] + minGap;
+        }
+        for (var s = 0; s < SeriesCount; s++)
+        {
+            Canvas.SetLeft(_seriesValueLabel[s], ChartPlotWidth + 7);
+            Canvas.SetTop(_seriesValueLabel[s], Math.Clamp(endY[s] - 7, 0, ChartHeight - 12));
+        }
+
+        var n = points.Count;
+        var lastX = n <= 1 ? 0 : (n - 1) * (ChartPlotWidth / (n - 1));
+        _chartTodayGuide.X1 = lastX;
+        _chartTodayGuide.X2 = lastX;
+    }
+
+    // The only way to read an exact value for a specific date used to be
+    // "guess from where the curve is" - hovering now snaps to the nearest
+    // day's X and pops a tooltip with the real date and all three prices.
+    private void OnChartCanvasMouseMove(object sender, MouseEventArgs e)
+    {
+        if (_latestHistory is not { Count: > 0 } history) return;
+
+        var n = history.Count;
+        var step = n <= 1 ? 0 : ChartPlotWidth / (n - 1);
+        var pos = e.GetPosition(_chartCanvas);
+        var idx = step <= 0 ? 0 : (int)Math.Round(pos.X / step);
+        idx = Math.Clamp(idx, 0, n - 1);
+
+        var x = idx * step;
+        _chartHoverGuide.X1 = x;
+        _chartHoverGuide.X2 = x;
+        _chartHoverGuide.Visibility = Visibility.Visible;
+        SetHoveredMarkerIndex(idx);
+
+        var p = history[idx];
+
+        if (_chartCrosshairHover)
+        {
+            _chartTooltip.Visibility = Visibility.Hidden;
+            ShowHoverChips(idx, new[] { $"{p.UsdRub:0.00}", $"{p.EurRub:0.00}", $"{p.CnyRub:0.00}" });
+            return;
+        }
+
+        foreach (var chip in _hoverChips) chip.Visibility = Visibility.Hidden;
+        _tooltipDate.Text = p.Date.ToString("dd MMMM", System.Globalization.CultureInfo.GetCultureInfo("ru-RU"));
+        _tooltipValues[0].Text = $"{p.UsdRub:0.0000}";
+        _tooltipValues[1].Text = $"{p.EurRub:0.0000}";
+        _tooltipValues[2].Text = $"{p.CnyRub:0.0000}";
+
+        _chartTooltip.Visibility = Visibility.Visible;
+        _chartTooltip.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var tipWidth = _chartTooltip.DesiredSize.Width;
+        var left = Math.Clamp(x - tipWidth / 2, 0, ChartWidth - tipWidth);
+        Canvas.SetLeft(_chartTooltip, left);
+        Canvas.SetTop(_chartTooltip, 2);
+    }
+
+    // Variant E: a small pill in each series' own color sitting just above
+    // its point at the hovered X - no shared box, so it reads as part of the
+    // line itself rather than a separate UI panel. When two or three lines
+    // sit close together at that X, docking each chip to its own raw point
+    // makes them overlap into unreadable mush - so all three are laid out
+    // together here: sorted top-to-bottom by their actual line position,
+    // then any chip too close to the one above it gets pushed further DOWN
+    // (never sideways/up), so a tight cluster fans out into a clean stack
+    // instead of a pile.
+    private void ShowHoverChips(int pointIndex, string[] values)
+    {
+        if (_seriesPoints[0] is not { Count: > 0 } pts0 || pointIndex >= pts0.Count) return;
+
+        var x = pts0[pointIndex].X;
+        var rawY = new double[SeriesCount];
+        var widths = new double[SeriesCount];
+        var heights = new double[SeriesCount];
+
+        for (var s = 0; s < SeriesCount; s++)
+        {
+            _hoverChipTexts[s].Text = values[s];
+            var chip = _hoverChips[s];
+            chip.Visibility = Visibility.Visible;
+            chip.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            widths[s] = chip.DesiredSize.Width;
+            heights[s] = chip.DesiredSize.Height;
+            rawY[s] = _seriesPoints[s] is { } pts && pointIndex < pts.Count ? pts[pointIndex].Y : 0;
+        }
+
+        var order = new[] { 0, 1, 2 };
+        Array.Sort(order, (a, b) => rawY[a].CompareTo(rawY[b]));
+
+        // Stack each chip just above its own point, pushing later ones down
+        // when they'd overlap the one above. Near a shared peak the natural
+        // chain can run off the bottom of the chart - shifting the WHOLE
+        // chain up by the overflow (instead of clamping only the last chip
+        // individually) keeps every chip's spacing intact instead of
+        // dumping the last one back on top of its neighbor and hiding it
+        // behind it in z-order.
+        const double gap = 3;
+        var tops = new double[SeriesCount];
+        var prevBottom = double.NegativeInfinity;
+        foreach (var s in order)
+        {
+            var top = Math.Max(rawY[s] - heights[s] - 8, prevBottom + gap);
+            tops[s] = top;
+            prevBottom = top + heights[s];
+        }
+
+        var overflow = prevBottom - ChartHeight;
+        if (overflow > 0)
+        {
+            foreach (var s in order) tops[s] -= overflow;
+        }
+
+        var topmost = tops[order[0]];
+        if (topmost < 0)
+        {
+            foreach (var s in order) tops[s] -= topmost;
+        }
+
+        foreach (var s in order)
+        {
+            Canvas.SetLeft(_hoverChips[s], Math.Clamp(x - widths[s] / 2, 0, ChartWidth - widths[s]));
+            Canvas.SetTop(_hoverChips[s], tops[s]);
+        }
+    }
+
+    // Confirms which day the tooltip is showing by popping the three dots at
+    // that X a little bigger, with a white ring - without this the tooltip
+    // number and the actual point it came from were only linked by the
+    // vertical guide line, easy to lose track of on a small chart.
+    private void SetHoveredMarkerIndex(int hoveredIndex)
+    {
+        for (var s = 0; s < SeriesCount; s++)
+        {
+            for (var d = 0; d < ChartDays; d++)
+            {
+                var marker = _seriesMarkers[s][d];
+                if (marker.Visibility != Visibility.Visible) continue;
+                var cx = Canvas.GetLeft(marker) + marker.Width / 2;
+                var cy = Canvas.GetTop(marker) + marker.Height / 2;
+                var isHovered = d == hoveredIndex;
+                var size = isHovered ? 8.5 : 5.5;
+                marker.Width = size;
+                marker.Height = size;
+                Canvas.SetLeft(marker, cx - size / 2);
+                Canvas.SetTop(marker, cy - size / 2);
+                marker.StrokeThickness = isHovered ? 2 : 1.2;
+                marker.Stroke = new SolidColorBrush(isHovered ? Colors.White : Color.FromRgb(12, 12, 14));
+            }
+        }
+    }
+
+    // Draws the line/fill/markers for one series and reports back the raw
+    // (pre-collision-avoidance) Y of its last point, so the caller can space
+    // out value labels across all three series at once.
+    private double SetSeries(int index, List<double> values)
+    {
+        var line = _seriesLine[index];
+        var fill = _seriesFill[index];
+        var markers = _seriesMarkers[index];
+        var label = _seriesValueLabel[index];
+
+        if (values.Count == 0)
+        {
+            line.Data = null;
+            fill.Data = null;
+            foreach (var m in markers) m.Visibility = Visibility.Hidden;
+            label.Text = "";
+            return ChartHeight / 2;
+        }
+
+        var min = values.Min();
+        var max = values.Max();
+        var range = max - min;
+        if (range < 0.0001) range = 1; // dead-flat over the window - avoid a divide by zero
+
+        const double topPad = 8, bottomPad = 8;
+        var usableHeight = ChartHeight - topPad - bottomPad;
+        var n = values.Count;
+        var points = new List<Point>(n);
+        for (var i = 0; i < n; i++)
+        {
+            var x = n == 1 ? 0 : i * (ChartPlotWidth / (n - 1));
+            var normalized = (values[i] - min) / range;
+            var y = topPad + (1 - normalized) * usableHeight;
+            points.Add(new Point(x, y));
+        }
+
+        line.Data = BuildSmoothGeometry(points, fillToY: null);
+        fill.Data = BuildSmoothGeometry(points, fillToY: ChartHeight);
+        _seriesPoints[index] = points;
+
+        for (var d = 0; d < ChartDays; d++)
+        {
+            if (d >= n) { markers[d].Visibility = Visibility.Hidden; continue; }
+            markers[d].Visibility = Visibility.Visible;
+            markers[d].Width = 5.5;
+            markers[d].Height = 5.5;
+            Canvas.SetLeft(markers[d], points[d].X - markers[d].Width / 2);
+            Canvas.SetTop(markers[d], points[d].Y - markers[d].Height / 2);
+        }
+
+        label.Text = $"{values[^1]:0.00}";
+        return points[^1].Y;
+    }
+
+    // Catmull-Rom points converted to cubic bezier control points - a smooth
+    // curve through every data point (not just a rounded corner between
+    // straight segments) reads as a real finished chart instead of a
+    // connect-the-dots line. With fillToY set, the same curve closes down to
+    // that Y to make a fillable area shape instead of an open stroke path.
+    private static PathGeometry BuildSmoothGeometry(List<Point> points, double? fillToY)
+    {
+        var figure = new PathFigure { StartPoint = points[0], IsFilled = fillToY.HasValue };
+
+        if (points.Count == 1)
+        {
+            // nothing to connect
+        }
+        else if (points.Count == 2)
+        {
+            figure.Segments.Add(new LineSegment(points[1], true));
+        }
+        else
+        {
+            for (var i = 0; i < points.Count - 1; i++)
+            {
+                var p0 = i == 0 ? points[i] : points[i - 1];
+                var p1 = points[i];
+                var p2 = points[i + 1];
+                var p3 = i + 2 < points.Count ? points[i + 2] : p2;
+
+                var c1 = new Point(p1.X + (p2.X - p0.X) / 6.0, p1.Y + (p2.Y - p0.Y) / 6.0);
+                var c2 = new Point(p2.X - (p3.X - p1.X) / 6.0, p2.Y - (p3.Y - p1.Y) / 6.0);
+                figure.Segments.Add(new BezierSegment(c1, c2, p2, true));
+            }
+        }
+
+        if (fillToY.HasValue)
+        {
+            figure.Segments.Add(new LineSegment(new Point(points[^1].X, fillToY.Value), true));
+            figure.Segments.Add(new LineSegment(new Point(points[0].X, fillToY.Value), true));
+            figure.IsClosed = true;
+        }
+
+        var geometry = new PathGeometry();
+        geometry.Figures.Add(figure);
+        return geometry;
+    }
+
+    public Action? SettingsRequested;
+
+    public void ResetPosition()
+    {
+        _pos = new PositionState();
+        ApplyPosition();
+        _pos.Left = Left;
+        _pos.Top = Top;
+        _pos.AnchorH = HorizontalContentAlignment.ToString();
+        _pos.AnchorV = VerticalContentAlignment.ToString();
+        SavePosition();
+    }
+
+    private void SetTab(int index)
+    {
+        _currentTab = ((index % TabCount) + TabCount) % TabCount;
+        _tabHost.Content = _tabViews[_currentTab];
+        _collapsedIcon.Content = BuildCollapsedIcon(_currentTab);
+
+        for (var i = 0; i < TabCount; i++)
+        {
+            _dots[i].Fill = i == _currentTab
+                ? Brushes.White
+                : new SolidColorBrush(Color.FromArgb(90, 255, 255, 255));
+        }
+
+        RefreshHistoryIfStale();
+    }
+
+    // Small glyphs shown on the collapsed pill for whichever tab was last
+    // open, so the pill isn't just a blank capsule (like the Dynamic Island
+    // showing the active app's icon). Thin vector strokes to match the
+    // capsule's own hairline rim rather than a clashing emoji/bitmap icon.
+    private static FrameworkElement BuildPulseIcon() => new Viewbox
+    {
+        Width = 15,
+        Height = 15,
+        Child = new ShapePath
+        {
+            Data = Geometry.Parse("M1,8 L4,8 L6,2.5 L9,13.5 L11,8 L15,8"),
+            Stroke = Brushes.White,
+            StrokeThickness = 1.6,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            StrokeLineJoin = PenLineJoin.Round
+        }
+    };
+
+    private FrameworkElement? BuildCollapsedIcon(int tab) => tab switch
+    {
+        CurrencyTabIndex => BuildCollapsedRatesRow(),
+        ChartTabIndex => BuildCollapsedRatesRow(),
+        _ => null
+    };
+
+    private static readonly Color UsdAccent = Color.FromRgb(0x5F, 0xD0, 0x68);
+    private static readonly Color EurAccent = Color.FromRgb(0x5A, 0xC8, 0xFA);
+    private static readonly Color CnyAccent = Color.FromRgb(0xFF, 0xD1, 0x66);
+    private static readonly Color TrendUpColor = Color.FromRgb(0x30, 0xD1, 0x58);
+    private static readonly Color TrendDownColor = Color.FromRgb(0xFF, 0x45, 0x3A);
+
+    // Plain currency glyphs ($/€/¥) are ordinary font characters, not
+    // multi-color emoji, so they render fine as text and don't need a
+    // vector icon.
+    private static StackPanel BuildChip(string symbol, string value, Color accent, bool first, int trend) =>
+        BuildChipCore(new TextBlock
+        {
+            Text = symbol,
+            Foreground = new SolidColorBrush(accent),
+            FontSize = 15,
+            FontWeight = FontWeights.Bold,
+            FontFamily = ValueFont,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        }, value, first, trend);
+
+    // A small filled triangle for a day-over-day move, or a thin flat dash
+    // when the rate didn't change - drawn instead of a text arrow character
+    // so it matches the app's own thin-vector-glyph look (see BuildPulseIcon)
+    // rather than pulling in a font's own arrow glyph at an inconsistent
+    // weight/baseline.
+    private static ShapePath BuildTrendArrow(int trend)
+    {
+        if (trend == 0)
+        {
+            return new ShapePath
+            {
+                Data = Geometry.Parse("M0,4 L8,4"),
+                Stroke = new SolidColorBrush(Color.FromArgb(110, 235, 235, 240)),
+                StrokeThickness = 1.6,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+                Width = 8,
+                Height = 8
+            };
+        }
+
+        return new ShapePath
+        {
+            Data = Geometry.Parse(trend > 0 ? "M0,8 L4,0 L8,8 Z" : "M0,0 L4,8 L8,0 Z"),
+            Fill = new SolidColorBrush(trend > 0 ? TrendUpColor : TrendDownColor),
+            Width = 8,
+            Height = 8
+        };
+    }
+
+    private static StackPanel BuildChipCore(FrameworkElement icon, string value, bool first, int trend)
+    {
+        var chip = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(first ? 0 : 9, 0, 0, 0)
+        };
+        // A fixed-size slot for the icon/symbol, centered inside it, so a
+        // 14px vector glyph and a 15px bold currency character both land on
+        // the exact same footprint next to the value text instead of each
+        // nudging the baseline by their own natural size - that mismatch is
+        // what read as "icon and text aren't symmetric".
+        var iconSlot = new Grid
+        {
+            Width = 16,
+            Height = 16,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        icon.HorizontalAlignment = HorizontalAlignment.Center;
+        icon.VerticalAlignment = VerticalAlignment.Center;
+        iconSlot.Children.Add(icon);
+        chip.Children.Add(iconSlot);
+
+        // Fixed-width trend slot, always populated (flat dash included) -
+        // so the chip's width never shifts between refreshes depending on
+        // whether that particular currency happened to move that day.
+        var trendArrow = BuildTrendArrow(trend);
+        trendArrow.HorizontalAlignment = HorizontalAlignment.Center;
+        trendArrow.VerticalAlignment = VerticalAlignment.Center;
+        var trendSlot = new Grid
+        {
+            Width = 10,
+            Height = 16,
+            Margin = new Thickness(1, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        trendSlot.Children.Add(trendArrow);
+        chip.Children.Add(trendSlot);
+
+        chip.Children.Add(new TextBlock
+        {
+            Text = value,
+            Foreground = Brushes.White,
+            FontSize = 17,
+            FontWeight = FontWeights.SemiBold,
+            FontFamily = ValueFont,
+            Margin = new Thickness(3, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        return chip;
+    }
+
+    private FrameworkElement BuildCollapsedRatesRow()
+    {
+        if (_latestHistory is not { Count: > 0 } history)
+        {
+            return new TextBlock
+            {
+                Text = "₽",
+                Foreground = Brushes.White,
+                FontSize = 16,
+                FontWeight = FontWeights.SemiBold,
+                FontFamily = LabelFont
+            };
+        }
+
+        var r = history[^1];
+        var prev = history.Count >= 2 ? history[^2] : null;
+        var row = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+
+        row.Children.Add(BuildChip("$", $"{r.UsdRub:0.0000}", UsdAccent, first: true, Trend(r.UsdRub, prev?.UsdRub)));
+        row.Children.Add(BuildChip("€", $"{r.EurRub:0.0000}", EurAccent, first: false, Trend(r.EurRub, prev?.EurRub)));
+        row.Children.Add(BuildChip("¥", $"{r.CnyRub:0.0000}", CnyAccent, first: false, Trend(r.CnyRub, prev?.CnyRub)));
+
+        return row;
+    }
+
+    // 1 = up, -1 = down, 0 = flat or no prior day to compare against.
+    private static int Trend(double current, double? previous)
+    {
+        if (previous is not { } p || Math.Abs(current - p) < 0.00005) return 0;
+        return current > p ? 1 : -1;
+    }
+
+    private const double CollapsedRatesWidth = 326;
+
+    private void OnShellMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        // Ignored while a switch is already animating rather than queued or
+        // stacked - overlapping fade animations on the same property could
+        // drop a Completed callback, leaving _tabHost stuck at opacity 0
+        // (a "black" pill) with _currentTab desynced so scrolling appeared to
+        // do nothing afterward.
+        if (!_isExpanded || _tabAnimating) return;
+        AnimateTabSwitch(_currentTab + (e.Delta > 0 ? -1 : 1));
+        e.Handled = true;
+    }
+
+    private void AnimateTabSwitch(int index)
+    {
+        var newIndex = ((index % TabCount) + TabCount) % TabCount;
+        if (newIndex == _currentTab) return;
+
+        _tabAnimating = true;
+        var fadeOut = new DoubleAnimation(_tabHost.Opacity, 0, TimeSpan.FromMilliseconds(90))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
+        };
+        fadeOut.Completed += (_, _) =>
+        {
+            SetTab(newIndex);
+            ResizeForTab(newIndex);
+            var fadeIn = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            };
+            fadeIn.Completed += (_, _) => _tabAnimating = false;
+            _tabHost.BeginAnimation(OpacityProperty, fadeIn);
+        };
+        _tabHost.BeginAnimation(OpacityProperty, fadeOut);
+    }
+
+    // PointToScreen/PointFromScreen return physical pixels while Window.Left/
+    // Top are device-independent units, and mixing the two made the pill drift
+    // away from the cursor proportionally to drag distance on a scaled display.
+    // GetCursorPos + the window's own DPI gives a DIP-consistent screen point.
+    private Point GetCursorScreenDip()
+    {
+        GetCursorPos(out var p);
+        var dpi = VisualTreeHelper.GetDpi(this);
+        return new Point(p.X / dpi.DpiScaleX, p.Y / dpi.DpiScaleY);
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out NativePoint lpPoint);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    // Reads the work area directly via Win32 and converts it with this
+    // window's own DPI, so it's guaranteed consistent with Left/Top/Width
+    // (also DIPs) regardless of how SystemParameters.WorkArea behaves.
+    private Rect GetWorkAreaDip()
+    {
+        const uint SPI_GETWORKAREA = 0x0030;
+        var rect = new NativeRect();
+        SystemParametersInfo(SPI_GETWORKAREA, 0, ref rect, 0);
+        var dpi = VisualTreeHelper.GetDpi(this);
+        return new Rect(
+            rect.Left / dpi.DpiScaleX,
+            rect.Top / dpi.DpiScaleY,
+            (rect.Right - rect.Left) / dpi.DpiScaleX,
+            (rect.Bottom - rect.Top) / dpi.DpiScaleY);
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool SystemParametersInfo(uint uiAction, uint uiParam, ref NativeRect pvParam, uint fWinIni);
+
+    // Removing our own DropShadowEffect didn't kill the soft white haze
+    // hugging the pill's top edge because it was never ours to begin with -
+    // Windows itself tags AllowsTransparency+WindowStyle=None windows with
+    // the CS_DROPSHADOW window-class style and DWM paints that glow outside
+    // WPF's own rendering pipeline entirely, on top of whatever we draw.
+    // Clearing the class style bit is the standard fix.
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        const int GCL_STYLE = -26;
+        const long CS_DROPSHADOW = 0x00020000;
+        var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        var style = GetClassLongPtr(hwnd, GCL_STYLE).ToInt64();
+        SetClassLongPtr(hwnd, GCL_STYLE, new IntPtr(style & ~CS_DROPSHADOW));
+    }
+
+    [DllImport("user32.dll", EntryPoint = "GetClassLongPtr")]
+    private static extern IntPtr GetClassLongPtr(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", EntryPoint = "SetClassLongPtr")]
+    private static extern IntPtr SetClassLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    // A plain click is a MouseDown+MouseUp with barely any movement - it used
+    // to unconditionally start a drag (and instantly collapse the pill) on
+    // MouseDown alone, so clicking an expanded pill collapsed it for no
+    // reason. Now MouseDown only arms a drag *candidate*; it only becomes a
+    // real drag (and only then collapses) once the cursor actually moves past
+    // DragStartThreshold in OnShellMouseMove.
+    private const double DragStartThreshold = 4;
+
+    private void OnShellMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left) return;
+        _dragCandidate = true;
+        _dragging = false;
+        _shell.CaptureMouse();
+        _dragMouseStart = GetCursorScreenDip();
+        _dragWindowStart = new Point(Left, Top);
+        _dragBaseH = HorizontalContentAlignment;
+        _dragBaseV = VerticalContentAlignment;
+        e.Handled = true;
+    }
+
+    private void OnShellMouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_dragCandidate || _positionUpdateInProgress) return;
+
+        var current = GetCursorScreenDip();
+        var delta = current - _dragMouseStart;
+
+        if (!_dragging)
+        {
+            if (Math.Abs(delta.X) < DragStartThreshold && Math.Abs(delta.Y) < DragStartThreshold) return;
+            _dragging = true;
+            _snapped = false;
+            _snapArmed = false;
+            // Quick (90ms), not the full 220ms - running the collapse's five
+            // concurrent animations at full length at the exact moment the
+            // drag loop starts hammering Left/Top every mouse move is what
+            // read as jerky/laggy right at the start of a drag. Going fully
+            // instant instead fixed that but looked like a harsh snap/jump-
+            // cut - still animated, just shorter, so it reads as a quick
+            // shrink instead of either a stutter or a cut.
+            CollapseFast();
+        }
+
+        _positionUpdateInProgress = true;
+
+        try
+        {
+            // Computed fully in locals and assigned to Left/Top exactly once
+            // each - Left and Top are separate dependency properties, each
+            // triggering its own SetWindowPos, so writing them more than once
+            // per move (e.g. a raw write followed by a separate clamp write)
+            // let an external observer - and occasionally the compositor -
+            // catch a torn intermediate frame, which read as teleporting.
+            var rawLeft = _dragWindowStart.X + delta.X;
+            var rawTop = _dragWindowStart.Y + delta.Y;
+
+            // Live magnetic pull toward a snap point, same alignment only (a
+            // point built for a different corner would read its coordinates
+            // under the wrong alignment and jump). Alignment itself never
+            // changes mid-drag - only on release - so this is a pure position
+            // nudge, and hysteresis (wider radius once already snapped) stops
+            // the pill flickering in and out right at the capture boundary.
+            //
+            // The magnet only actually pulls once the drag has left every
+            // capture radius at least once (_snapArmed). A drag that STARTS
+            // already resting on a point begins disarmed, so nudging away
+            // from it isn't fought by its own gravity the instant you move -
+            // it only re-engages once you've genuinely left and can approach
+            // a point again.
+            var stillSnapped = false;
+            var withinAnyRadius = false;
+            foreach (var (point, radius, h, v) in GetSnapPoints())
+            {
+                if (h != _dragBaseH || v != _dragBaseV) continue;
+                var effectiveRadius = _snapped ? radius * 1.2 : radius;
+                if (Math.Abs(rawLeft - point.X) < effectiveRadius && Math.Abs(rawTop - point.Y) < effectiveRadius)
+                {
+                    withinAnyRadius = true;
+                    if (_snapArmed)
+                    {
+                        rawLeft = point.X;
+                        rawTop = point.Y;
+                        stillSnapped = true;
+                    }
+                    break;
+                }
+            }
+            _snapped = stillSnapped;
+            if (!withinAnyRadius) _snapArmed = true;
+
+            var (clampedLeft, clampedTop) = ClampWindowPosition(rawLeft, rawTop);
+            Left = clampedLeft;
+            Top = clampedTop;
+        }
+        finally
+        {
+            _positionUpdateInProgress = false;
+        }
+    }
+
+    // The earlier "flicker at the edge" turned out to be the clamp math bug
+    // (wrong work-area units) fighting itself, not a real DWM edge quirk, so
+    // this stays at 0 - fully flush against the monitor edge is reachable.
+    private const double DragEdgeMargin = 0;
+
+    private (double Left, double Top) ClampWindowPosition(double left, double top)
+    {
+        // Used live during drag, which is always mid-collapse-animation (see
+        // OnShellMouseUp for the full story) - the target collapsed size is
+        // what actually matters, not wherever _shell.Width/Height happens to
+        // be that frame. When called at rest (ClampToScreen), the two are
+        // already equal, so this is safe either way.
+        var area = GetWorkAreaDip();
+        var pillWidth = GetCollapsedWidth();
+        var pillHeight = CollapsedHeight;
+
+        var pillLeft = PillLeftFromWindow(left, pillWidth);
+        var pillTop = PillTopFromWindow(top, pillHeight);
+
+        var clampedPillLeft = Math.Clamp(pillLeft, area.Left + DragEdgeMargin, area.Right - DragEdgeMargin - pillWidth);
+        var clampedPillTop = Math.Clamp(pillTop, area.Top + DragEdgeMargin, area.Bottom - DragEdgeMargin - pillHeight);
+
+        var newLeft = WindowLeftFromPill(clampedPillLeft, pillWidth, HorizontalContentAlignment);
+        var newTop = WindowTopFromPill(clampedPillTop, pillHeight, VerticalContentAlignment);
+        return (newLeft, newTop);
+    }
+
+    private void ClampToScreen()
+    {
+        var (clampedLeft, clampedTop) = ClampWindowPosition(Left, Top);
+        Left = clampedLeft;
+        Top = clampedTop;
+    }
+
+    private void OnShellMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_dragCandidate) return;
+        _dragCandidate = false;
+        _shell.ReleaseMouseCapture();
+
+        // Never crossed the drag threshold - it was just a click. The pill
+        // never collapsed for this gesture, so there's nothing to finalize;
+        // leave it exactly as it was (expanded, hovering).
+        if (!_dragging) return;
+        _dragging = false;
+
+        // Snapping only happens here, once, at release - not on every move
+        // event during the drag. Alignment never changes mid-drag, so if this
+        // drag started at a DIFFERENT corner (e.g. dragged in from bottom-
+        // left), Left/Top are still being tracked in that corner's alignment
+        // terms - comparing them directly against a point defined for a
+        // different alignment (home is Right/Top) silently never matched,
+        // so dragging in from elsewhere could never dock at home. Re-express
+        // the pill's actual current position in each candidate point's own
+        // alignment terms before comparing - this is a no-op when the drag's
+        // alignment already matches the candidate (the common case), and
+        // only matters when it doesn't.
+        // The collapse triggered by this drag animates over ~220ms - a quick
+        // release (exactly what happens when someone decisively drops the
+        // pill in a corner) lands while _shell.Width/Height are still mid-
+        // shrink, not yet at their final collapsed size. Using the live,
+        // still-animating value here made the corner math intermittently
+        // wrong depending on how fast the release happened. Use the actual
+        // target collapsed size instead - deterministic regardless of where
+        // the animation currently is.
+        var pillWidth = GetCollapsedWidth();
+        var pillHeight = CollapsedHeight;
+        var pillLeft = PillLeftFromWindow(Left, pillWidth);
+        var pillTop = PillTopFromWindow(Top, pillHeight);
+
+        var docked = false;
+        foreach (var (point, radius, h, v) in GetSnapPoints())
+        {
+            var equivLeft = WindowLeftFromPill(pillLeft, pillWidth, h);
+            var equivTop = WindowTopFromPill(pillTop, pillHeight, v);
+
+            if (Math.Abs(equivLeft - point.X) < radius && Math.Abs(equivTop - point.Y) < radius)
+            {
+                SetAnchor(h, v);
+                Left = point.X;
+                Top = point.Y;
+                docked = true;
+                break;
+            }
+        }
+        // Didn't land on a snap point - still make sure alignment matches
+        // whatever quadrant it was actually dropped in (e.g. dragged in from
+        // one corner and released somewhere in open space), done once here
+        // rather than on every later hover.
+        if (!docked) UpdateGrowthAlignment();
+
+        _pos.Left = Left;
+        _pos.Top = Top;
+        _pos.AnchorH = HorizontalContentAlignment.ToString();
+        _pos.AnchorV = VerticalContentAlignment.ToString();
+        SavePosition();
+
+        if (!_shell.IsMouseOver) Collapse();
+    }
+
+    private (Point Point, double Radius, HorizontalAlignment H, VerticalAlignment V)[] GetSnapPoints()
+    {
+        var area = GetWorkAreaDip();
+        var topRight = new Point(area.Right - EdgeMargin - Width, area.Top + TopEdgeMargin);
+
+        // Only the default home corner snaps for now - more points get added
+        // here once their exact coordinates are picked with the coord-watcher
+        // tool (tools/coord-watcher.ps1).
+        return new[]
+        {
+            (topRight, SnapThreshold * 1.3, HorizontalAlignment.Right, VerticalAlignment.Top)
+        };
+    }
+
+    public void ToggleForcedVisibility()
+    {
+        _forcedHidden = !_forcedHidden;
+        if (_forcedHidden)
+        {
+            AnimateOpacity(0, () => Visibility = Visibility.Hidden);
+        }
+        else
+        {
+            Visibility = Visibility.Visible;
+            AnimateOpacity(1, null);
+        }
+    }
+
+    private void Expand()
+    {
+        if (_forcedHidden || _isExpanded) return;
+        _isExpanded = true;
+        // No UpdateGrowthAlignment() here - it used to run on every single
+        // hover. Collapsed width varies by tab (currency's compact rate row
+        // is much wider than the plain icon), so recomputing the quadrant on
+        // every hover with whatever width happened to be active could flip
+        // alignment even though the window never actually moved, jerking the
+        // pill sideways. It only needs to run once, right after a drag
+        // actually changes the position (see OnShellMouseUp).
+        _content.Visibility = Visibility.Visible;
+        _settingsButton.Visibility = Visibility.Visible;
+        ResizeForTab(_currentTab);
+        AnimateContentOpacity(1);
+        AnimateSettingsButtonOpacity(1);
+        AnimateCollapsedIconOpacity(0);
+        RefreshHistoryIfStale();
+    }
+
+    // Growing the window happens BEFORE the shell animates into it (bigger
+    // container first, nothing to clip). Shrinking is the other way around:
+    // the shell animates down FIRST, and the real window only shrinks once
+    // that finishes. Doing it in the naive order - snap the window straight
+    // to the new (smaller) size, then animate the shell down to match over
+    // ~220ms - left the window's hard edge clipping the still-larger shell
+    // for most of that animation: the settings button (anchored to the
+    // shell's own bottom-right) rode along with the still-tall shell and
+    // got clipped down to a sliver at the window's edge, and the capsule's
+    // rounded corners got a flat cut instead of a smooth shrink. That's the
+    // "corners jerking/cutting" seen switching table -> chart -> table.
+    private void ResizeForTab(int tab)
+    {
+        var targetHeight = TabExpandedHeight[tab];
+        ResizeShellAndWindow(ExpandedWidth, targetHeight, CollapsedHeight * 0.34, AnimDuration);
+    }
+
+    // Shared by ResizeForTab AND Collapse/CollapseFast - collapsing is just
+    // another "resize the real window to a target height" case, and it used
+    // to be handled separately by simply never touching the window at all
+    // (only the shell animated). That left the real Window.Height stuck at
+    // whatever tab was last expanded (138 or 178) FOREVER, even at rest,
+    // fully collapsed - so the next Expand()'s "am I growing or shrinking"
+    // check compared the new tab's target against that stale leftover value
+    // instead of the true current height, occasionally picking the wrong
+    // grow/shrink branch.
+    //
+    // The deferred window-shrink used to be scheduled on its own
+    // DispatcherTimer with a hardcoded duration guess. A quick hover in/out
+    // (or fast tab flick) fired a SECOND resize before the first timer ever
+    // ticked, so two independent timer chains raced each other - each
+    // closing over its own stale target height - and the window would snap
+    // to whichever one happened to fire last, sometimes stepping through an
+    // intermediate size on the way ("blinks and changes size"). Hanging the
+    // deferred resize off the shell's OWN height animation Completed event
+    // instead removes the race entirely: WPF cancels an animation's pending
+    // Completed callback the instant a NEW animation starts on that same
+    // property (BeginAnimation always supersedes), so only the most recent
+    // resize's callback can ever actually fire - no manual bookkeeping, no
+    // timing guesswork.
+    private void ResizeShellAndWindow(double targetWidth, double targetHeight, double targetRadius, TimeSpan duration)
+    {
+        var growing = targetHeight > Height;
+
+        _resizingTab = true;
+        if (growing) ResizeWindowHeight(targetHeight);
+
+        AnimateShell(targetWidth, targetHeight, targetRadius, duration, onHeightCompleted: () =>
+        {
+            if (!growing) ResizeWindowHeight(targetHeight);
+            _resizingTab = false;
+
+            // Reconcile against whatever the cursor is ACTUALLY doing right
+            // now - a Enter/Leave that arrived while this resize was still
+            // guarded only updated _isMouseOverShell, it never got to act.
+            if (_dragging) return;
+            if (_isMouseOverShell && !_isExpanded) Expand();
+            else if (!_isMouseOverShell && _isExpanded) Collapse();
+        });
+    }
+
+    // The pill's default growth is symmetric - it pops open centered on
+    // wherever it's currently sitting, expanding equally in every direction
+    // (Center/Center). Only when that would actually run the expanded
+    // footprint off the work area on some side does that axis fall back to
+    // an edge anchor, growing away from just that edge. Recomputed fresh
+    // from scratch (not "keep whatever it was before") every time, so a
+    // pill sitting anywhere with room around it always lands on Center -
+    // it doesn't get stuck growing lopsided just because it was once
+    // dragged in from a corner.
+    private void UpdateGrowthAlignment()
+    {
+        // Only ever called right after a drag (see OnShellMouseUp), which is
+        // always in the middle of collapsing - use the target collapsed size,
+        // not the live mid-animation _shell.Width/Height (see the comment in
+        // OnShellMouseUp for why that was wrong).
+        var area = GetWorkAreaDip();
+        var pillWidth = GetCollapsedWidth();
+        var pillHeight = CollapsedHeight;
+
+        var pillLeft = PillLeftFromWindow(Left, pillWidth);
+        var pillTop = PillTopFromWindow(Top, pillHeight);
+        var pillCenterX = pillLeft + pillWidth / 2;
+        var pillCenterY = pillTop + pillHeight / 2;
+
+        var newH = HorizontalAlignment.Center;
+        if (pillCenterX - ExpandedWidth / 2 < area.Left) newH = HorizontalAlignment.Left;
+        else if (pillCenterX + ExpandedWidth / 2 > area.Right) newH = HorizontalAlignment.Right;
+
+        var newV = VerticalAlignment.Center;
+        if (pillCenterY - ExpandedHeight / 2 < area.Top) newV = VerticalAlignment.Top;
+        else if (pillCenterY + ExpandedHeight / 2 > area.Bottom) newV = VerticalAlignment.Bottom;
+
+        if (newH == HorizontalContentAlignment && newV == VerticalContentAlignment) return;
+
+        var newLeft = WindowLeftFromPill(pillLeft, pillWidth, newH);
+        var newTop = WindowTopFromPill(pillTop, pillHeight, newV);
+
+        SetAnchor(newH, newV);
+        Left = newLeft;
+        Top = newTop;
+    }
+
+    // Re-expresses the pill's visible left/top edge in terms of the WINDOW's
+    // Left/Top for a given alignment - Center means the pill sits in the
+    // middle of the fixed-size window (so it grows equally on both sides),
+    // Right/Bottom means it's pinned to that far edge (grows only away from
+    // it), and Left/Top (the switch default) means it's pinned to the near
+    // edge (grows only forward from it).
+    private double PillLeftFromWindow(double windowLeft, double pillWidth) => HorizontalContentAlignment switch
+    {
+        HorizontalAlignment.Right => windowLeft + Width - pillWidth,
+        HorizontalAlignment.Center => windowLeft + (Width - pillWidth) / 2,
+        _ => windowLeft
+    };
+
+    private double PillTopFromWindow(double windowTop, double pillHeight) => VerticalContentAlignment switch
+    {
+        VerticalAlignment.Bottom => windowTop + Height - pillHeight,
+        VerticalAlignment.Center => windowTop + (Height - pillHeight) / 2,
+        _ => windowTop
+    };
+
+    // The inverse of the above: given where the pill should visibly sit,
+    // solves for the WINDOW's Left/Top under a given (possibly different)
+    // target alignment, so switching alignment never moves the visible pill.
+    private double WindowLeftFromPill(double pillLeft, double pillWidth, HorizontalAlignment h) => h switch
+    {
+        HorizontalAlignment.Right => pillLeft - Width + pillWidth,
+        HorizontalAlignment.Center => pillLeft - (Width - pillWidth) / 2,
+        _ => pillLeft
+    };
+
+    private double WindowTopFromPill(double pillTop, double pillHeight, VerticalAlignment v) => v switch
+    {
+        VerticalAlignment.Bottom => pillTop - Height + pillHeight,
+        VerticalAlignment.Center => pillTop - (Height - pillHeight) / 2,
+        _ => pillTop
+    };
+
+    // Single source of truth for the anchor: keeps the Window's own
+    // HorizontalContentAlignment/VerticalContentAlignment as plain state
+    // storage (read all over this file, and persisted via _pos.AnchorH/V),
+    // AND drives the actual on-screen position by setting _shell's own
+    // HorizontalAlignment/VerticalAlignment within the stretching contentHost
+    // Grid - the only alignment mechanism WPF reliably honors here.
+    private void SetAnchor(HorizontalAlignment h, VerticalAlignment v)
+    {
+        HorizontalContentAlignment = h;
+        VerticalContentAlignment = v;
+        _shell.HorizontalAlignment = h;
+        _shell.VerticalAlignment = v;
+    }
+
+    // Changes the WINDOW's own Height (the actual HWND, not just _shell) -
+    // per-tab sizing means this app's usual "OS window never resizes"
+    // invariant now has one deliberate exception. Keeps whichever edge
+    // VerticalContentAlignment currently anchors to fixed in place (same
+    // idea as PillTopFromWindow/WindowTopFromPill elsewhere), so the visible
+    // capsule doesn't jump when its height changes.
+    private void ResizeWindowHeight(double targetHeight)
+    {
+        if (Math.Abs(Height - targetHeight) < 0.5) return;
+
+        var oldHeight = Height;
+        var newTop = VerticalContentAlignment switch
+        {
+            VerticalAlignment.Bottom => Top + oldHeight - targetHeight,
+            VerticalAlignment.Center => Top + (oldHeight - targetHeight) / 2,
+            _ => Top
+        };
+
+        Top = newTop;
+        Height = targetHeight;
+    }
+
+    private void Collapse()
+    {
+        if (!_isExpanded) return;
+        _isExpanded = false;
+        _collapsedIcon.Content = BuildCollapsedIcon(_currentTab);
+        ResizeShellAndWindow(GetCollapsedWidth(), CollapsedHeight, CollapsedHeight / 2, AnimDuration);
+        AnimateContentOpacity(0, onCompleted: () => _content.Visibility = Visibility.Hidden);
+        AnimateSettingsButtonOpacity(0, onCompleted: () => _settingsButton.Visibility = Visibility.Hidden);
+        AnimateCollapsedIconOpacity(1);
+    }
+
+    // Same end state as Collapse(), but quick instead of the full-length
+    // animation - used only when a drag starts, so the size/opacity
+    // transition doesn't fight the drag loop's per-move Left/Top writes for
+    // as long. Fully instant (no animation at all) turned out to look like
+    // a harsh snap/jump-cut instead of a shrink - still animated, just a lot
+    // shorter, so it reads as a quick shrink rather than either a stutter
+    // or a cut.
+    private static readonly TimeSpan FastAnimDuration = TimeSpan.FromMilliseconds(90);
+
+    private void CollapseFast()
+    {
+        if (!_isExpanded) return;
+        _isExpanded = false;
+        _collapsedIcon.Content = BuildCollapsedIcon(_currentTab);
+        ResizeShellAndWindow(GetCollapsedWidth(), CollapsedHeight, CollapsedHeight / 2, FastAnimDuration);
+        AnimateContentOpacity(0, onCompleted: () => _content.Visibility = Visibility.Hidden, FastAnimDuration);
+        AnimateSettingsButtonOpacity(0, onCompleted: () => _settingsButton.Visibility = Visibility.Hidden, FastAnimDuration);
+        AnimateCollapsedIconOpacity(1, FastAnimDuration);
+    }
+
+    private double GetCollapsedWidth()
+    {
+        if (_latestHistory is { Count: > 0 }) return CollapsedRatesWidth;
+        return CollapsedWidth;
+    }
+
+    private void AnimateShell(double targetWidth, double targetHeight, double targetRadius, TimeSpan? duration = null, Action? onHeightCompleted = null)
+    {
+        var animDuration = duration ?? AnimDuration;
+        // A touch of spring overshoot on the way out (growing) reads as a
+        // premium "pop" instead of a mechanical resize; a small amplitude
+        // keeps it from looking bouncy or glitchy. Collapsing stays a plain
+        // ease-out - overshooting while shrinking would dip below the target
+        // size and pop back, which looks like a glitch, not polish. This is
+        // a pure animation-curve tweak (no brushes/effects), so it carries
+        // none of the alpha-compositing risk the earlier gradient sheen did.
+        // CornerRadius stays on a plain ease always - overshooting it (even
+        // by the same small amount as width/height) briefly swings the
+        // corner rounding past the target and back, which reads as the
+        // corners flickering/glitching right as the pill finishes expanding.
+        var growing = targetWidth > _shell.Width;
+        var plainEase = new CubicEase { EasingMode = EasingMode.EaseOut };
+        EasingFunctionBase sizeEase = growing
+            ? new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.25 }
+            : plainEase;
+
+        var widthAnim = new DoubleAnimation(_shell.Width, targetWidth, animDuration) { EasingFunction = sizeEase };
+        var heightAnim = new DoubleAnimation(_shell.Height, targetHeight, animDuration) { EasingFunction = sizeEase };
+        if (onHeightCompleted != null) heightAnim.Completed += (_, _) => onHeightCompleted();
+        var radiusAnim = new CornerRadiusAnimation(_shell.CornerRadius, new CornerRadius(targetRadius), animDuration) { EasingFunction = plainEase };
+
+        _shell.BeginAnimation(WidthProperty, widthAnim);
+        _shell.BeginAnimation(HeightProperty, heightAnim);
+        _shell.BeginAnimation(Border.CornerRadiusProperty, radiusAnim);
+    }
+
+    private void AnimateContentOpacity(double target, Action? onCompleted = null, TimeSpan? duration = null)
+    {
+        var anim = new DoubleAnimation(_content.Opacity, target, duration ?? TimeSpan.FromMilliseconds(150));
+        if (onCompleted != null) anim.Completed += (_, _) => onCompleted();
+        _content.BeginAnimation(OpacityProperty, anim);
+    }
+
+    private void AnimateCollapsedIconOpacity(double target, TimeSpan? duration = null)
+    {
+        var anim = new DoubleAnimation(_collapsedIcon.Opacity, target, duration ?? TimeSpan.FromMilliseconds(150));
+        _collapsedIcon.BeginAnimation(OpacityProperty, anim);
+    }
+
+    // The settings gear now lives outside _content (see BuildInnerContent) so
+    // its corner margin isn't at the mercy of _content's own asymmetric
+    // padding - which means it also needs its own explicit show/hide fade in
+    // Expand()/Collapse()/CollapseFast() instead of inheriting _content's.
+    private void AnimateSettingsButtonOpacity(double target, Action? onCompleted = null, TimeSpan? duration = null)
+    {
+        var anim = new DoubleAnimation(_settingsButton.Opacity, target, duration ?? TimeSpan.FromMilliseconds(150));
+        if (onCompleted != null) anim.Completed += (_, _) => onCompleted();
+        _settingsButton.BeginAnimation(OpacityProperty, anim);
+    }
+
+    private void AnimateOpacity(double target, Action? onDone)
+    {
+        var anim = new DoubleAnimation(Opacity, target, TimeSpan.FromMilliseconds(200));
+        if (onDone != null) anim.Completed += (_, _) => onDone();
+        BeginAnimation(OpacityProperty, anim);
+    }
+
+    private void ApplyPosition()
+    {
+        if (double.IsNaN(_pos.Left) || double.IsNaN(_pos.Top))
+        {
+            var area = GetWorkAreaDip();
+            SetAnchor(HorizontalAlignment.Right, VerticalAlignment.Top);
+            Left = area.Right - EdgeMargin - Width;
+            Top = area.Top + TopEdgeMargin;
+            return;
+        }
+
+        SetAnchor(
+            Enum.TryParse<HorizontalAlignment>(_pos.AnchorH, out var h) ? h : HorizontalAlignment.Right,
+            Enum.TryParse<VerticalAlignment>(_pos.AnchorV, out var v) ? v : VerticalAlignment.Top);
+        Left = _pos.Left;
+        Top = _pos.Top;
+        ClampToScreen();
+    }
+
+    private void LoadPosition()
+    {
+        try
+        {
+            if (File.Exists(_stateFile))
+            {
+                var json = File.ReadAllText(_stateFile);
+                var loaded = JsonSerializer.Deserialize<PositionState>(json);
+                if (loaded != null) _pos = loaded;
+            }
+        }
+        catch
+        {
+            // corrupt or unreadable state file - fall back to default position
+        }
+    }
+
+    private void SavePosition()
+    {
+        try
+        {
+            File.WriteAllText(_stateFile, JsonSerializer.Serialize(_pos));
+        }
+        catch
+        {
+            // best-effort persistence only
+        }
+    }
+
+}
+
+internal sealed class CornerRadiusAnimation : AnimationTimeline
+{
+    public CornerRadius From { get; }
+    public CornerRadius To { get; }
+
+    public CornerRadiusAnimation(CornerRadius from, CornerRadius to, TimeSpan duration)
+    {
+        From = from;
+        To = to;
+        Duration = new Duration(duration);
+    }
+
+    public EasingFunctionBase? EasingFunction { get; set; }
+
+    public override Type TargetPropertyType => typeof(CornerRadius);
+
+    protected override Freezable CreateInstanceCore() => new CornerRadiusAnimation(From, To, Duration.TimeSpan);
+
+    public override object GetCurrentValue(object defaultOriginValue, object defaultDestinationValue, AnimationClock clock)
+    {
+        var progress = clock.CurrentProgress ?? 0;
+        if (EasingFunction != null) progress = EasingFunction.Ease(progress);
+
+        double Lerp(double a, double b) => a + (b - a) * progress;
+
+        return new CornerRadius(
+            Lerp(From.TopLeft, To.TopLeft),
+            Lerp(From.TopRight, To.TopRight),
+            Lerp(From.BottomRight, To.BottomRight),
+            Lerp(From.BottomLeft, To.BottomLeft));
+    }
+}
+
+public sealed class App : Application
+{
+    private Forms.NotifyIcon? _trayIcon;
+    private IslandWindow? _window;
+    private SettingsWindow? _settingsWindow;
+    private UpdatePromptWindow? _updatePromptWindow;
+    private string? _updateNotifiedVersion;
+    private string? _pendingUpdateAssetUrl;
+    private bool _updateApplying;
+
+    [STAThread]
+    public static void Main()
+    {
+        var app = new App();
+        app.Run();
+    }
+
+    protected override void OnStartup(StartupEventArgs e)
+    {
+        base.OnStartup(e);
+        ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
+        // The actual root cause of the black settings window: this app has no
+        // App.xaml, so the Wpf.Ui theme/control resource dictionaries that a
+        // normal project merges declaratively (see SircleToSearch's App.xaml:
+        // <ui:ThemesDictionary Theme="Light"/> + <ui:ControlsDictionary/>)
+        // never got merged here. ApplicationThemeManager.Apply alone doesn't
+        // substitute for that. Without those dictionaries, CardControl/
+        // ToggleSwitch/FluentWindow's chrome all fall back to unstyled/blank
+        // rendering (which is what "black window" and "empty card rows"
+        // both were). Forcing software rendering was a wrong turn chasing a
+        // remote-desktop theory - it never was that, and it left a stray
+        // opaque-white artifact behind the transparent island pill. Fixed
+        // properly by merging the same dictionaries SircleToSearch uses.
+        Resources.MergedDictionaries.Add(new Wpf.Ui.Markup.ThemesDictionary { Theme = Wpf.Ui.Appearance.ApplicationTheme.Light });
+        Resources.MergedDictionaries.Add(new Wpf.Ui.Markup.ControlsDictionary());
+
+        // If autostart is on at all, make sure the registered path still
+        // points at wherever this build is actually running from - see
+        // AppSettings.RepairAutostart for why that drifts.
+        AppSettings.RepairAutostart();
+        CheckUrgentUpdateFlag();
+
+        _window = new IslandWindow();
+        _window.SettingsRequested = OpenSettings;
+        _window.Show();
+
+        _trayIcon = new Forms.NotifyIcon
+        {
+            Icon = BuildTrayIcon(),
+            Visible = true,
+            Text = "Currency Island"
+        };
+
+        var menu = new Forms.ContextMenuStrip();
+        var toggleItem = menu.Items.Add("Показать/скрыть");
+        toggleItem.Click += (_, _) => _window?.ToggleForcedVisibility();
+        var settingsItem = menu.Items.Add("Настройки");
+        settingsItem.Click += (_, _) => OpenSettings();
+        var checkUpdatesItem = menu.Items.Add("Проверить обновления");
+        checkUpdatesItem.Click += (_, _) => CheckForUpdatesInBackground(manual: true);
+        menu.Items.Add(new Forms.ToolStripSeparator());
+        var exitItem = menu.Items.Add("Выход");
+        exitItem.Click += (_, _) => Shutdown();
+
+        _trayIcon.ContextMenuStrip = menu;
+        _trayIcon.DoubleClick += (_, _) => _window?.ToggleForcedVisibility();
+
+        CheckForUpdatesInBackground();
+    }
+
+    private void CheckUrgentUpdateFlag()
+    {
+        try
+        {
+            if (!File.Exists(SelfUpdater.UrgentUpdateFlagPath)) return;
+            File.Delete(SelfUpdater.UrgentUpdateFlagPath);
+            _trayIcon?.ShowBalloonTip(8000, "Currency Island",
+                "Экстренное обновление установлено.", Forms.ToolTipIcon.Info);
+        }
+        catch
+        {
+            // best-effort notification only
+        }
+    }
+
+    private async void CheckForUpdatesInBackground(bool manual = false)
+    {
+        try
+        {
+            var result = await UpdateChecker.CheckAsync();
+            if (!result.UpdateAvailable || result.AssetDownloadUrl is null)
+            {
+                if (manual)
+                    _trayIcon?.ShowBalloonTip(5000, "Currency Island", "У вас последняя версия.", Forms.ToolTipIcon.Info);
+                return;
+            }
+
+            if (!manual && result.LatestVersion == _updateNotifiedVersion) return;
+            _updateNotifiedVersion = result.LatestVersion;
+            _pendingUpdateAssetUrl = result.AssetDownloadUrl;
+
+            if (result.IsUrgent || AppSettings.Load().AutoUpdate)
+            {
+                _ = ApplyUpdateAsync(result.AssetDownloadUrl, result.IsUrgent);
+            }
+            else
+            {
+                ShowUpdatePrompt();
+            }
+        }
+        catch
+        {
+            if (manual)
+                _trayIcon?.ShowBalloonTip(5000, "Currency Island", "Не удалось проверить обновления.", Forms.ToolTipIcon.Warning);
+        }
+    }
+
+    public void OfferUpdate(string version, string assetUrl)
+    {
+        _updateNotifiedVersion = version;
+        _pendingUpdateAssetUrl = assetUrl;
+        ShowUpdatePrompt();
+    }
+
+    private void ShowUpdatePrompt()
+    {
+        if (_pendingUpdateAssetUrl is not { } assetUrl) return;
+
+        if (_updatePromptWindow is not null)
+        {
+            _updatePromptWindow.Activate();
+            return;
+        }
+
+        _updatePromptWindow = new UpdatePromptWindow(_updateNotifiedVersion ?? "");
+        _updatePromptWindow.UpdateAccepted += () => _ = ApplyUpdateAsync(assetUrl);
+        _updatePromptWindow.Closed += (_, _) => _updatePromptWindow = null;
+        _updatePromptWindow.Show();
+        _updatePromptWindow.Activate();
+    }
+
+    private async Task ApplyUpdateAsync(string assetUrl, bool urgent = false)
+    {
+        if (_updateApplying) return;
+        _updateApplying = true;
+
+        try
+        {
+            await SelfUpdater.DownloadAndRestartAsync(assetUrl, urgent: urgent);
+        }
+        catch
+        {
+            // best-effort auto-update only
+        }
+        finally
+        {
+            _updateApplying = false;
+        }
+    }
+
+    private void OpenSettings()
+    {
+        if (_settingsWindow != null)
+        {
+            _settingsWindow.Activate();
+            return;
+        }
+
+        _settingsWindow = new SettingsWindow(_window!);
+        _settingsWindow.Closed += (_, _) => _settingsWindow = null;
+        _settingsWindow.Show();
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        _trayIcon!.Visible = false;
+        _trayIcon.Dispose();
+        base.OnExit(e);
+    }
+
+    private static Drawing.Icon BuildTrayIcon()
+    {
+        using var bmp = new Drawing.Bitmap(32, 32);
+        using (var g = Drawing.Graphics.FromImage(bmp))
+        {
+            g.Clear(Drawing.Color.Transparent);
+            using var brush = new Drawing.SolidBrush(Drawing.Color.FromArgb(255, 18, 18, 20));
+            g.FillEllipse(brush, 2, 2, 28, 28);
+        }
+        var hIcon = bmp.GetHicon();
+        return Drawing.Icon.FromHandle(hIcon);
+    }
+}
