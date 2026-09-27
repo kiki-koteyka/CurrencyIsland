@@ -11,8 +11,6 @@ public sealed class SettingsData
     // one card); true = crosshair - just a thin guide line and three small
     // colored value chips sitting right on each line, no box at all.
     public bool ChartCrosshairHover { get; set; }
-
-    public bool AutoUpdate { get; set; } = true;
 }
 
 public static class AppSettings

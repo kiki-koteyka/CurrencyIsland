@@ -10,20 +10,25 @@ namespace DynamicIsland;
 
 public sealed class UpdatePromptWindow : FluentWindow
 {
-    private bool _loading = true;
-
     public event Action? UpdateAccepted;
 
-    public UpdatePromptWindow(string version)
+    // urgent (the "URGENT" release-body marker) never forces anything - it
+    // used to skip this window entirely and self-update without asking.
+    // Now the update only ever starts from the button click below, same as
+    // any other release; urgent just makes this window harder to miss
+    // (a red accent + a plainer "this fixes something important" line)
+    // instead of silently swapping the exe out from under the user.
+    public UpdatePromptWindow(string version, bool urgent = false)
     {
         Title = "Currency Island";
         Width = 360;
-        Height = 220;
+        Height = 190;
         ResizeMode = ResizeMode.NoResize;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         ExtendsContentIntoTitleBar = true;
         WindowBackdropType = WindowBackdropType.None;
         Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#F3F3F3")!);
+        Topmost = urgent;
 
         var root = new Grid();
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -36,10 +41,15 @@ public sealed class UpdatePromptWindow : FluentWindow
         var body = new StackPanel { Margin = new Thickness(20, 8, 20, 16) };
         Grid.SetRow(body, 1);
 
+        var accentColor = urgent ? "#D13438" : "#0F0F0F";
         var questionText = new TextBlock
         {
-            Text = $"Available new version: {version}. Update now?",
+            Text = urgent
+                ? $"Important update available: {version}."
+                : $"Available new version: {version}. Update now?",
             FontSize = 14,
+            FontWeight = urgent ? FontWeights.SemiBold : FontWeights.Normal,
+            Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString(accentColor)!),
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8)
         };
@@ -47,25 +57,15 @@ public sealed class UpdatePromptWindow : FluentWindow
 
         var hintText = new TextBlock
         {
-            Text = "The app will download the update, close, and restart automatically.",
+            Text = urgent
+                ? "This release fixes something important. The app will download the update, close, and restart - only once you click Update."
+                : "The app will download the update, close, and restart - only once you click Update.",
             FontSize = 12,
             Opacity = 0.65,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 16)
         };
         body.Children.Add(hintText);
-
-        var autoUpdateToggle = new ToggleSwitch { IsChecked = AppSettings.Load().AutoUpdate };
-        var autoUpdateCard = new CardControl
-        {
-            Margin = new Thickness(0, 0, 0, 16),
-            Icon = new SymbolIcon { Symbol = SymbolRegular.ArrowSync24 },
-            Header = new TextBlock { Text = "Install updates automatically", FontSize = 13, VerticalAlignment = VerticalAlignment.Center },
-            Content = autoUpdateToggle
-        };
-        autoUpdateToggle.Checked += (_, _) => SetAutoUpdate(true);
-        autoUpdateToggle.Unchecked += (_, _) => SetAutoUpdate(false);
-        body.Children.Add(autoUpdateCard);
 
         var buttonRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         var laterButton = new Button { Content = "Later", Appearance = ControlAppearance.Secondary, Margin = new Thickness(0, 0, 8, 0) };
@@ -82,15 +82,5 @@ public sealed class UpdatePromptWindow : FluentWindow
 
         root.Children.Add(body);
         Content = root;
-
-        _loading = false;
-    }
-
-    private void SetAutoUpdate(bool enabled)
-    {
-        if (_loading) return;
-        var data = AppSettings.Load();
-        data.AutoUpdate = enabled;
-        AppSettings.Save(data);
     }
 }

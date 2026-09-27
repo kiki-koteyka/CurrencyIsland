@@ -102,7 +102,6 @@ public sealed class SettingsWindow : FluentWindow
             Opacity = 0.6,
             Margin = new Thickness(0, 0, 0, 8)
         });
-        _pageAbout.Children.Add(BuildAutoUpdateCard());
         _pageAbout.Children.Add(BuildCheckUpdateCard());
         contentPanel.Children.Add(_pageAbout);
 
@@ -190,21 +189,6 @@ public sealed class SettingsWindow : FluentWindow
             Margin = new Thickness(0, 0, 0, 8),
             Icon = new SymbolIcon { Symbol = SymbolRegular.CursorHover24 },
             Header = new TextBlock { Text = "Crosshair chart hover", FontSize = 14, VerticalAlignment = VerticalAlignment.Center },
-            Content = toggle
-        };
-    }
-
-    private CardControl BuildAutoUpdateCard()
-    {
-        var toggle = new ToggleSwitch { IsChecked = _data.AutoUpdate };
-        toggle.Checked += (_, _) => { _data.AutoUpdate = true; AppSettings.Save(_data); };
-        toggle.Unchecked += (_, _) => { _data.AutoUpdate = false; AppSettings.Save(_data); };
-
-        return new CardControl
-        {
-            Margin = new Thickness(0, 0, 0, 8),
-            Icon = new SymbolIcon { Symbol = SymbolRegular.ArrowSync24 },
-            Header = new TextBlock { Text = "Install updates automatically", FontSize = 14, VerticalAlignment = VerticalAlignment.Center },
             Content = toggle
         };
     }

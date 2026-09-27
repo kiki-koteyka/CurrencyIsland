@@ -1351,7 +1351,46 @@ public sealed class IslandWindow : Window
         var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
         var style = GetClassLongPtr(hwnd, GCL_STYLE).ToInt64();
         SetClassLongPtr(hwnd, GCL_STYLE, new IntPtr(style & ~CS_DROPSHADOW));
+
+        // ShowInTaskbar=false alone doesn't reliably keep this out of the
+        // Alt-Tab switcher - that's driven by WS_EX_APPWINDOW/TOOLWINDOW on
+        // the window's extended style, not the taskbar visibility WPF
+        // property. Forcing TOOLWINDOW on and APPWINDOW off directly is the
+        // actual mechanism Alt-Tab checks.
+        const int GWL_EXSTYLE = -20;
+        const long WS_EX_TOOLWINDOW = 0x00000080;
+        const long WS_EX_APPWINDOW = 0x00040000;
+        var exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE).ToInt64();
+        exStyle = (exStyle | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW;
+        SetWindowLongPtr(hwnd, GWL_EXSTYLE, new IntPtr(exStyle));
+
+        // Topmost=true alone can still get knocked down by another window
+        // that also asks for topmost (some games/capture tools, or a UAC
+        // prompt), and it doesn't recover on its own. Re-asserting HWND_
+        // TOPMOST on a slow timer keeps it pinned above everything without
+        // ever touching size/position/activation, so there's nothing for
+        // it to visibly flicker - a no-op SetWindowPos when it's already
+        // on top, silent recovery on the rare frame it isn't.
+        _topmostTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+        _topmostTimer.Tick += (_, _) => SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        _topmostTimer.Start();
     }
+
+    private DispatcherTimer? _topmostTimer;
+    private static readonly IntPtr HWND_TOPMOST = new(-1);
+    private const uint SWP_NOMOVE = 0x0002;
+    private const uint SWP_NOSIZE = 0x0001;
+    private const uint SWP_NOACTIVATE = 0x0010;
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtr")]
+    private static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtr")]
+    private static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
 
     [DllImport("user32.dll", EntryPoint = "GetClassLongPtr")]
     private static extern IntPtr GetClassLongPtr(IntPtr hWnd, int nIndex);
@@ -2199,14 +2238,15 @@ public sealed class App : Application
             _updateNotifiedVersion = result.LatestVersion;
             _pendingUpdateAssetUrl = result.AssetDownloadUrl;
 
-            if (result.IsUrgent || AppSettings.Load().AutoUpdate)
-            {
-                _ = ApplyUpdateAsync(result.AssetDownloadUrl, result.IsUrgent);
-            }
-            else
-            {
-                ShowUpdatePrompt();
-            }
+            // Never applies on its own, period - not even for an IsUrgent
+            // release. The app vanishing and reappearing (self-update swaps
+            // the exe and restarts the process) with no warning read as
+            // broken/crashed, not as an update. IsUrgent still exists as a
+            // publisher-side marker, but all it does now is make the
+            // prompt itself more insistent (see ShowUpdatePrompt) - the
+            // actual update only ever starts from the user clicking
+            // "Update" in that window.
+            ShowUpdatePrompt(result.IsUrgent);
         }
         catch
         {
@@ -2219,10 +2259,10 @@ public sealed class App : Application
     {
         _updateNotifiedVersion = version;
         _pendingUpdateAssetUrl = assetUrl;
-        ShowUpdatePrompt();
+        ShowUpdatePrompt(urgent: false);
     }
 
-    private void ShowUpdatePrompt()
+    private void ShowUpdatePrompt(bool urgent)
     {
         if (_pendingUpdateAssetUrl is not { } assetUrl) return;
 
@@ -2232,8 +2272,8 @@ public sealed class App : Application
             return;
         }
 
-        _updatePromptWindow = new UpdatePromptWindow(_updateNotifiedVersion ?? "");
-        _updatePromptWindow.UpdateAccepted += () => _ = ApplyUpdateAsync(assetUrl);
+        _updatePromptWindow = new UpdatePromptWindow(_updateNotifiedVersion ?? "", urgent);
+        _updatePromptWindow.UpdateAccepted += () => _ = ApplyUpdateAsync(assetUrl, urgent);
         _updatePromptWindow.Closed += (_, _) => _updatePromptWindow = null;
         _updatePromptWindow.Show();
         _updatePromptWindow.Activate();
