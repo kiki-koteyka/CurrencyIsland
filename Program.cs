@@ -2205,7 +2205,19 @@ public sealed class App : Application
         _trayIcon.DoubleClick += (_, _) => _window?.ToggleForcedVisibility();
 
         CheckForUpdatesInBackground();
+
+        // A single check at startup meant an already-running instance
+        // never found out about a release published after it launched -
+        // this app can sit in the tray for days. Silent (manual: false) -
+        // no balloon for "still up to date", same as the startup check;
+        // the prompt window is still the only thing that ever surfaces an
+        // available update, and it still only ever applies on a click.
+        _updateCheckTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(15) };
+        _updateCheckTimer.Tick += (_, _) => CheckForUpdatesInBackground();
+        _updateCheckTimer.Start();
     }
+
+    private DispatcherTimer? _updateCheckTimer;
 
     private void CheckUrgentUpdateFlag()
     {
