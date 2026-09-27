@@ -57,6 +57,8 @@ public sealed class IslandWindow : Window
     private static readonly TimeSpan AnimDuration = TimeSpan.FromMilliseconds(220);
 
     private readonly Border _shell;
+    private double _hoverZoneWidth;
+    private double _hoverZoneHeight;
     private Grid _content = null!;
     private ContentControl _collapsedIcon = null!;
     private readonly ContentControl _tabHost = new();
@@ -107,13 +109,23 @@ public sealed class IslandWindow : Window
         WindowStartupLocation = WindowStartupLocation.Manual;
         SizeToContent = SizeToContent.Manual;
 
-        // The OS window is fixed at the expanded footprint and NEVER resizes.
-        // Resizing a layered window under the cursor triggers spurious
-        // MouseLeave/MouseEnter, which turned into an Expand/Collapse feedback
-        // loop (the reported jitter). All grow/shrink motion happens on the
-        // inner _shell instead, which is cheap and doesn't touch the HWND.
+        // Width is fixed at the expanded footprint forever - it's never
+        // touched outside this line, unlike Height (see AnimateWindowHeight),
+        // so the phantom-event risk that comment used to warn about only
+        // ever applied to Height. Starting Height at CollapsedHeight (not
+        // ExpandedHeight) matters now for a reason that has nothing to do
+        // with that: the app always STARTS collapsed (_isExpanded defaults
+        // false), and IsCursorOverHoverZone()/PillTopFromWindow assume the
+        // window's real Height already matches whatever the pill is
+        // currently resting at. Starting it at the wrong (expanded) value
+        // left Height stale until the first real resize ever ran - for a
+        // Center/Bottom anchor specifically, that meant the hover check was
+        // testing the cursor against a rectangle offset from where _shell
+        // actually rendered (Center-aligned in a window taller than it),
+        // so the very first hover after launch could never register as
+        // "over" the pill at all.
         Width = ExpandedWidth;
-        Height = ExpandedHeight;
+        Height = CollapsedHeight;
         HorizontalContentAlignment = HorizontalAlignment.Right;
         VerticalContentAlignment = VerticalAlignment.Top;
 
@@ -155,6 +167,9 @@ public sealed class IslandWindow : Window
         // white/opaque rectangle showing through instead of the transparent
         // background, reproduced across two different rendering
         // configurations - not worth it for a shadow.
+        _hoverZoneWidth = CollapsedWidth;
+        _hoverZoneHeight = CollapsedHeight;
+
         var contentHost = new Grid();
         contentHost.Children.Add(_shell);
         Content = contentHost;
@@ -168,18 +183,36 @@ public sealed class IslandWindow : Window
         // the cursor has already left, no further Leave event was ever going
         // to arrive to retry it, leaving the pill stuck open. _isMouseOverShell
         // tracks the real, un-guarded hover state on every Enter/Leave; once
-        // a resize's guard clears (see ResizeShellAndWindow), it's checked
+        // a resize's guard clears (see ResizeForTab/CollapseShellAndWindow), it's checked
         // against _isExpanded and reconciled - so a hover change that arrived
         // mid-resize still takes effect once it's safe to act on it.
+        //
+        // Enter/Leave themselves are NOT trusted at face value though -
+        // _shell's own Width/Height animate for the grow/shrink motion, and
+        // WPF re-synchronizes MouseEnter/MouseLeave on every layout pass, not
+        // just on real mouse input. A cursor sitting in the gap between the
+        // collapsed and expanded footprints (326 vs 380 wide) got flipped in
+        // and out of "over the shell" on every animation frame as _shell's
+        // own bounds swept across it mid-resize - each flip re-triggering
+        // Expand()/Collapse(), which starts another animation, which flips
+        // it again: a self-sustaining oscillation with the cursor never
+        // actually moving (seen as the pill rapidly resizing on its own).
+        // Enter/Leave still fire and still drive a re-check, but what they
+        // trigger is IsCursorOverHoverZone() - the TRUE OS cursor position
+        // (GetCursorScreenDip, unaffected by which element WPF thinks is
+        // "hit") against _hoverZoneWidth/Height, which snap instantly
+        // (see ResizeForTab/CollapseShellAndWindow) to each resize's TARGET size instead of
+        // animating - a stable rectangle, so only genuine cursor movement
+        // can change the result.
         _shell.MouseEnter += (_, _) =>
         {
-            _isMouseOverShell = true;
-            if (!_dragging && !_resizingTab) Expand();
+            _isMouseOverShell = IsCursorOverHoverZone();
+            if (_isMouseOverShell && !_dragging && !_resizingTab) Expand();
         };
         _shell.MouseLeave += (_, _) =>
         {
-            _isMouseOverShell = false;
-            if (!_dragging && !_resizingTab) Collapse();
+            _isMouseOverShell = IsCursorOverHoverZone();
+            if (!_isMouseOverShell && !_dragging && !_resizingTab) Collapse();
         };
         _shell.MouseLeftButtonDown += OnShellMouseDown;
         _shell.MouseMove += OnShellMouseMove;
@@ -198,9 +231,30 @@ public sealed class IslandWindow : Window
         _currencyRefreshTimer = new DispatcherTimer { Interval = CurrencyCacheLifetime };
         _currencyRefreshTimer.Tick += (_, _) => RefreshHistoryIfStale();
         _currencyRefreshTimer.Start();
+
+        // Safety net for a MouseLeave that WPF never actually dispatches -
+        // rare but real for an AllowsTransparency layered window with a
+        // constantly-changing hit-test region, and when it happens there is
+        // no event left to react to: the pill sits expanded forever with
+        // the cursor long gone, because nothing else was ever going to
+        // re-check. This polls IsCursorOverHoverZone() on a plain clock
+        // instead of trusting the event to arrive - only acts when it
+        // actually disagrees with the current state, so on the normal path
+        // (events firing fine) it never does anything.
+        _hoverPollTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
+        _hoverPollTimer.Tick += (_, _) =>
+        {
+            if (_dragging || _resizingTab || _forcedHidden) return;
+            var over = IsCursorOverHoverZone();
+            if (over == _isExpanded) return;
+            _isMouseOverShell = over;
+            if (over) Expand(); else Collapse();
+        };
+        _hoverPollTimer.Start();
     }
 
     private readonly DispatcherTimer _currencyRefreshTimer;
+    private readonly DispatcherTimer _hoverPollTimer;
 
     private void BuildInnerContent()
     {
@@ -1348,6 +1402,7 @@ public sealed class IslandWindow : Window
             _dragging = true;
             _snapped = false;
             _snapArmed = false;
+            DebugTrace($"Drag START curLeft={Left:F1} curTop={Top:F1} curH={Height:F1} anchorH={HorizontalContentAlignment} anchorV={VerticalContentAlignment}");
             // Quick (90ms), not the full 220ms - running the collapse's five
             // concurrent animations at full length at the exact moment the
             // drag loop starts hammering Left/Top every mouse move is what
@@ -1406,6 +1461,7 @@ public sealed class IslandWindow : Window
             if (!withinAnyRadius) _snapArmed = true;
 
             var (clampedLeft, clampedTop) = ClampWindowPosition(rawLeft, rawTop);
+            if (Math.Abs(clampedTop - Top) > 1) DebugTrace($"Drag MOVE Top jump {Top:F1} -> {clampedTop:F1} (rawTop={rawTop:F1} curH={Height:F1})");
             Left = clampedLeft;
             Top = clampedTop;
         }
@@ -1432,13 +1488,13 @@ public sealed class IslandWindow : Window
         var pillHeight = CollapsedHeight;
 
         var pillLeft = PillLeftFromWindow(left, pillWidth);
-        var pillTop = PillTopFromWindow(top, pillHeight);
+        var pillTop = PillTopFromWindow(top, pillHeight, pillHeight);
 
         var clampedPillLeft = Math.Clamp(pillLeft, area.Left + DragEdgeMargin, area.Right - DragEdgeMargin - pillWidth);
         var clampedPillTop = Math.Clamp(pillTop, area.Top + DragEdgeMargin, area.Bottom - DragEdgeMargin - pillHeight);
 
         var newLeft = WindowLeftFromPill(clampedPillLeft, pillWidth, HorizontalContentAlignment);
-        var newTop = WindowTopFromPill(clampedPillTop, pillHeight, VerticalContentAlignment);
+        var newTop = WindowTopFromPill(clampedPillTop, pillHeight, VerticalContentAlignment, pillHeight);
         return (newLeft, newTop);
     }
 
@@ -1483,13 +1539,13 @@ public sealed class IslandWindow : Window
         var pillWidth = GetCollapsedWidth();
         var pillHeight = CollapsedHeight;
         var pillLeft = PillLeftFromWindow(Left, pillWidth);
-        var pillTop = PillTopFromWindow(Top, pillHeight);
+        var pillTop = PillTopFromWindow(Top, pillHeight, pillHeight);
 
         var docked = false;
         foreach (var (point, radius, h, v) in GetSnapPoints())
         {
             var equivLeft = WindowLeftFromPill(pillLeft, pillWidth, h);
-            var equivTop = WindowTopFromPill(pillTop, pillHeight, v);
+            var equivTop = WindowTopFromPill(pillTop, pillHeight, v, pillHeight);
 
             if (Math.Abs(equivLeft - point.X) < radius && Math.Abs(equivTop - point.Y) < radius)
             {
@@ -1556,6 +1612,28 @@ public sealed class IslandWindow : Window
         // actually changes the position (see OnShellMouseUp).
         _content.Visibility = Visibility.Visible;
         _settingsButton.Visibility = Visibility.Visible;
+
+        // The real window only ever needs to be as tall as whichever tab
+        // needs the most room (ExpandedHeight) while the pill is expanded
+        // at ALL - which tab happens to be showing is purely a _shell-level
+        // concern once the window is already that size. Growing the window
+        // to the max here, once, means every later tab switch (see
+        // ResizeForTab) never touches the HWND again for as long as the
+        // pill stays expanded - a native resize on every single scroll tick
+        // was what actually made tab-switching choppy (chasing the
+        // animation with a synchronous Win32 call every few milliseconds is
+        // real OS-level work, not just a compositor transform), not the
+        // shell's own WPF animation.
+        //
+        // Snapped, not animated (see SnapWindowHeight) - and happens right
+        // here, before ResizeForTab even starts _shell moving, so nothing
+        // else is animating anywhere in the window at the moment this
+        // native resize happens.
+        _hoverZoneWidth = ExpandedWidth;
+        _hoverZoneHeight = ExpandedHeight;
+        _resizingTab = true;
+        SnapWindowHeight(ExpandedHeight);
+
         ResizeForTab(_currentTab);
         AnimateContentOpacity(1);
         AnimateSettingsButtonOpacity(1);
@@ -1563,32 +1641,41 @@ public sealed class IslandWindow : Window
         RefreshHistoryIfStale();
     }
 
-    // Growing the window happens BEFORE the shell animates into it (bigger
-    // container first, nothing to clip). Shrinking is the other way around:
-    // the shell animates down FIRST, and the real window only shrinks once
-    // that finishes. Doing it in the naive order - snap the window straight
-    // to the new (smaller) size, then animate the shell down to match over
-    // ~220ms - left the window's hard edge clipping the still-larger shell
-    // for most of that animation: the settings button (anchored to the
-    // shell's own bottom-right) rode along with the still-tall shell and
-    // got clipped down to a sliver at the window's edge, and the capsule's
-    // rounded corners got a flat cut instead of a smooth shrink. That's the
-    // "corners jerking/cutting" seen switching table -> chart -> table.
+    // Purely a _shell-level resize now - the window is already sitting at
+    // ExpandedHeight for as long as the pill is expanded (see Expand()), so
+    // switching tabs never needs the HWND at all, just _shell animating
+    // within an already-big-enough container. Also used by Expand() itself
+    // to animate _shell to the current tab's size once the window has
+    // already grown to make room.
     private void ResizeForTab(int tab)
     {
         var targetHeight = TabExpandedHeight[tab];
-        ResizeShellAndWindow(ExpandedWidth, targetHeight, CollapsedHeight * 0.34, AnimDuration);
+        DebugTrace($"ResizeForTab targetH={targetHeight:F1} shellW={_shell.Width:F1} shellH={_shell.Height:F1}");
+        _resizingTab = true;
+        AnimateShell(ExpandedWidth, targetHeight, CollapsedHeight * 0.34, AnimDuration, onHeightCompleted: () =>
+        {
+            _resizingTab = false;
+
+            // Reconcile against whatever the cursor is ACTUALLY doing right
+            // now - a Enter/Leave that arrived while this resize was still
+            // guarded only updated _isMouseOverShell, it never got to act.
+            // Re-derived fresh (not just trusting the last Enter/Leave) for
+            // the same reason _shell.MouseEnter does - it's the truth this
+            // whole guard/reconcile dance exists to protect.
+            if (_dragging) return;
+            _isMouseOverShell = IsCursorOverHoverZone();
+            if (_isMouseOverShell && !_isExpanded) Expand();
+            else if (!_isMouseOverShell && _isExpanded) Collapse();
+        });
     }
 
-    // Shared by ResizeForTab AND Collapse/CollapseFast - collapsing is just
-    // another "resize the real window to a target height" case, and it used
-    // to be handled separately by simply never touching the window at all
-    // (only the shell animated). That left the real Window.Height stuck at
-    // whatever tab was last expanded (138 or 178) FOREVER, even at rest,
-    // fully collapsed - so the next Expand()'s "am I growing or shrinking"
-    // check compared the new tab's target against that stale leftover value
-    // instead of the true current height, occasionally picking the wrong
-    // grow/shrink branch.
+    // Shared by Collapse/CollapseFast. _shell shrinks first, purely in WPF -
+    // the window is still sitting at its full ExpandedHeight the whole time
+    // (see Expand()), so there's nothing for the still-larger window to
+    // clip and nothing for the still-smaller-target window to mismatch
+    // against either. Only once _shell has genuinely finished shrinking
+    // does the real window shrink to match, by which point shell and
+    // target already agree - there's nothing left to get wrong.
     //
     // The deferred window-shrink used to be scheduled on its own
     // DispatcherTimer with a hardcoded duration guess. A quick hover in/out
@@ -1603,24 +1690,41 @@ public sealed class IslandWindow : Window
     // property (BeginAnimation always supersedes), so only the most recent
     // resize's callback can ever actually fire - no manual bookkeeping, no
     // timing guesswork.
-    private void ResizeShellAndWindow(double targetWidth, double targetHeight, double targetRadius, TimeSpan duration)
+    private void CollapseShellAndWindow(TimeSpan duration)
     {
-        var growing = targetHeight > Height;
+        var targetWidth = GetCollapsedWidth();
+        DebugTrace($"CollapseShellAndWindow targetW={targetWidth:F1} curTop={Top:F1} curH={Height:F1} shellW={_shell.Width:F1} shellH={_shell.Height:F1}");
+
+        // Snapped instantly, not animated - see the comment by
+        // _shell.MouseEnter for why the hover zone must never be a moving
+        // target while _shell's own visual size animates underneath it.
+        _hoverZoneWidth = targetWidth;
+        _hoverZoneHeight = CollapsedHeight;
 
         _resizingTab = true;
-        if (growing) ResizeWindowHeight(targetHeight);
 
-        AnimateShell(targetWidth, targetHeight, targetRadius, duration, onHeightCompleted: () =>
+        AnimateShell(targetWidth, CollapsedHeight, CollapsedHeight / 2, duration, onHeightCompleted: () =>
         {
-            if (!growing) ResizeWindowHeight(targetHeight);
-            _resizingTab = false;
+            // SnapWindowHeight now animates (see its own comment) - the
+            // reconcile below waits for its onCompleted instead of running
+            // right after the call, same idea as ResizeForTab's own
+            // onHeightCompleted.
+            SnapWindowHeight(CollapsedHeight, duration, onCompleted: () =>
+            {
+                _resizingTab = false;
 
-            // Reconcile against whatever the cursor is ACTUALLY doing right
-            // now - a Enter/Leave that arrived while this resize was still
-            // guarded only updated _isMouseOverShell, it never got to act.
-            if (_dragging) return;
-            if (_isMouseOverShell && !_isExpanded) Expand();
-            else if (!_isMouseOverShell && _isExpanded) Collapse();
+                // Reconcile against whatever the cursor is ACTUALLY doing
+                // right now - a Enter/Leave that arrived while this resize
+                // was still guarded only updated _isMouseOverShell, it never
+                // got to act. Re-derived fresh (not just trusting the last
+                // Enter/Leave) for the same reason _shell.MouseEnter does -
+                // it's the truth this whole guard/reconcile dance exists to
+                // protect.
+                if (_dragging) return;
+                _isMouseOverShell = IsCursorOverHoverZone();
+                if (_isMouseOverShell && !_isExpanded) Expand();
+                else if (!_isMouseOverShell && _isExpanded) Collapse();
+            });
         });
     }
 
@@ -1644,7 +1748,7 @@ public sealed class IslandWindow : Window
         var pillHeight = CollapsedHeight;
 
         var pillLeft = PillLeftFromWindow(Left, pillWidth);
-        var pillTop = PillTopFromWindow(Top, pillHeight);
+        var pillTop = PillTopFromWindow(Top, pillHeight, pillHeight);
         var pillCenterX = pillLeft + pillWidth / 2;
         var pillCenterY = pillTop + pillHeight / 2;
 
@@ -1659,7 +1763,7 @@ public sealed class IslandWindow : Window
         if (newH == HorizontalContentAlignment && newV == VerticalContentAlignment) return;
 
         var newLeft = WindowLeftFromPill(pillLeft, pillWidth, newH);
-        var newTop = WindowTopFromPill(pillTop, pillHeight, newV);
+        var newTop = WindowTopFromPill(pillTop, pillHeight, newV, pillHeight);
 
         SetAnchor(newH, newV);
         Left = newLeft;
@@ -1679,10 +1783,25 @@ public sealed class IslandWindow : Window
         _ => windowLeft
     };
 
-    private double PillTopFromWindow(double windowTop, double pillHeight) => VerticalContentAlignment switch
+    // windowHeight is explicit, not read off Height, because every caller
+    // here is reasoning about a TARGET pill size while the real Window.Height
+    // may still be mid a DEFERRED shrink (CollapseFast defers the actual
+    // ResizeWindowHeight call to the shell animation's Completed - see
+    // ResizeForTab/CollapseShellAndWindow). Reading the live Height during that window used
+    // the still-expanded value for Bottom/Center math, then the deferred
+    // resize applied its OWN correction on top a moment later - two
+    // conflicting corrections compounding into the pill visibly jumping
+    // right as a drag starts (or a corner-snap released quickly enough to
+    // land before the deferred shrink caught up). Passing the same target
+    // height the caller already resolved (pillHeight/CollapsedHeight, per
+    // the "use target collapsed size, not live mid-animation size" pattern
+    // already established at every one of these call sites) makes this
+    // conversion consistent with where the window is ACTUALLY headed,
+    // not where it happens to still be this frame.
+    private double PillTopFromWindow(double windowTop, double pillHeight, double windowHeight) => VerticalContentAlignment switch
     {
-        VerticalAlignment.Bottom => windowTop + Height - pillHeight,
-        VerticalAlignment.Center => windowTop + (Height - pillHeight) / 2,
+        VerticalAlignment.Bottom => windowTop + windowHeight - pillHeight,
+        VerticalAlignment.Center => windowTop + (windowHeight - pillHeight) / 2,
         _ => windowTop
     };
 
@@ -1696,10 +1815,11 @@ public sealed class IslandWindow : Window
         _ => pillLeft
     };
 
-    private double WindowTopFromPill(double pillTop, double pillHeight, VerticalAlignment v) => v switch
+    // See PillTopFromWindow for why windowHeight is explicit instead of Height.
+    private double WindowTopFromPill(double pillTop, double pillHeight, VerticalAlignment v, double windowHeight) => v switch
     {
-        VerticalAlignment.Bottom => pillTop - Height + pillHeight,
-        VerticalAlignment.Center => pillTop - (Height - pillHeight) / 2,
+        VerticalAlignment.Bottom => pillTop - windowHeight + pillHeight,
+        VerticalAlignment.Center => pillTop - (windowHeight - pillHeight) / 2,
         _ => pillTop
     };
 
@@ -1717,15 +1837,64 @@ public sealed class IslandWindow : Window
         _shell.VerticalAlignment = v;
     }
 
-    // Changes the WINDOW's own Height (the actual HWND, not just _shell) -
-    // per-tab sizing means this app's usual "OS window never resizes"
-    // invariant now has one deliberate exception. Keeps whichever edge
-    // VerticalContentAlignment currently anchors to fixed in place (same
-    // idea as PillTopFromWindow/WindowTopFromPill elsewhere), so the visible
-    // capsule doesn't jump when its height changes.
-    private void ResizeWindowHeight(double targetHeight)
+    // Ground truth for "is the cursor over the pill" - deliberately NOT
+    // _shell's own (animating) bounds. See the comment by _shell.MouseEnter
+    // for why trusting the live hit-test result causes a self-sustaining
+    // resize oscillation.
+    private bool IsCursorOverHoverZone()
     {
-        if (Math.Abs(Height - targetHeight) < 0.5) return;
+        var cursor = GetCursorScreenDip();
+        var pillLeft = PillLeftFromWindow(Left, _hoverZoneWidth);
+        var pillTop = PillTopFromWindow(Top, _hoverZoneHeight, _hoverZoneHeight);
+        return cursor.X >= pillLeft && cursor.X <= pillLeft + _hoverZoneWidth
+            && cursor.Y >= pillTop && cursor.Y <= pillTop + _hoverZoneHeight;
+    }
+
+    private static void DebugTrace(string msg)
+    {
+        try
+        {
+            File.AppendAllText(
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CurrencyIsland", "resize-trace.log"),
+                $"{DateTime.Now:HH:mm:ss.fff} {msg}{Environment.NewLine}");
+        }
+        catch { }
+    }
+
+    // Changes the WINDOW's own Height (the actual HWND, not just _shell) to
+    // exactly targetHeight, in one synchronous step - no animation, no
+    // timer, nothing else touching the window while this runs. Every
+    // attempt at spreading this over time (a DispatcherTimer driving
+    // repeated native resizes, then BeginAnimation on Top/Height directly)
+    // read as jerky regardless of mechanism or how it was clocked - tab
+    // switching (ResizeForTab), which never touches the window at ALL, is
+    // the one thing that's stayed smooth through all of this. So the
+    // window doesn't animate either, same as it doesn't during a tab
+    // switch - it just isn't touched while anything else is moving,
+    // period. Keeps whichever edge VerticalContentAlignment currently
+    // anchors to fixed in place, so the visible capsule doesn't jump
+    // sideways-of-center when its height changes.
+    // Animating this (BeginAnimation on Top/Height, same composition clock
+    // as _shell's own animation) was tried twice now, on the theory that a
+    // ~140 DIP instant jump inherently reads as a teleport no matter how
+    // cleanly it's presented. Still came back jerky both times. Confirmed
+    // (2026-09-28) this whole class of resize glitch - jerky when
+    // animated, a one-frame teleport when snapped, immune to every
+    // presentation-timing fix tried (DwmFlush, staged hide/reveal,
+    // software rendering) - is specific to THIS machine: an older build
+    // with none of that day's fixes ran clean on a different laptop. Back
+    // to the plain instant snap, which is at least the simplest, most
+    // "just like tab switching" version of this - once Windhawk (or
+    // whatever this machine's actual culprit is) is out of the way, this
+    // is the version that should read as clean as tab-switching already
+    // does.
+    private void SnapWindowHeight(double targetHeight, TimeSpan? duration = null, Action? onCompleted = null)
+    {
+        if (Math.Abs(Height - targetHeight) < 0.5)
+        {
+            onCompleted?.Invoke();
+            return;
+        }
 
         var oldHeight = Height;
         var newTop = VerticalContentAlignment switch
@@ -1735,8 +1904,11 @@ public sealed class IslandWindow : Window
             _ => Top
         };
 
+        DebugTrace($"SnapWindowHeight fromH={oldHeight:F1} toH={targetHeight:F1} fromTop={Top:F1} toTop={newTop:F1}");
+
         Top = newTop;
         Height = targetHeight;
+        onCompleted?.Invoke();
     }
 
     private void Collapse()
@@ -1744,10 +1916,18 @@ public sealed class IslandWindow : Window
         if (!_isExpanded) return;
         _isExpanded = false;
         _collapsedIcon.Content = BuildCollapsedIcon(_currentTab);
-        ResizeShellAndWindow(GetCollapsedWidth(), CollapsedHeight, CollapsedHeight / 2, AnimDuration);
-        AnimateContentOpacity(0, onCompleted: () => _content.Visibility = Visibility.Hidden);
-        AnimateSettingsButtonOpacity(0, onCompleted: () => _settingsButton.Visibility = Visibility.Hidden);
-        AnimateCollapsedIconOpacity(1);
+        CollapseShellAndWindow(AnimDuration);
+        // Matched to AnimDuration (not the shorter default) so these are
+        // still actively fading at the exact moment the shell's shrink
+        // completes and SnapWindowHeight's brief invisible window-resize
+        // fires - with the default (shorter) duration, every other fade
+        // had already finished well before that point, leaving the
+        // window's own hide/resize/show as the only thing moving in an
+        // otherwise fully static frame, which is exactly what made it
+        // read as a stray blink instead of part of the same motion.
+        AnimateContentOpacity(0, onCompleted: () => _content.Visibility = Visibility.Hidden, AnimDuration);
+        AnimateSettingsButtonOpacity(0, onCompleted: () => _settingsButton.Visibility = Visibility.Hidden, AnimDuration);
+        AnimateCollapsedIconOpacity(1, AnimDuration);
     }
 
     // Same end state as Collapse(), but quick instead of the full-length
@@ -1764,7 +1944,7 @@ public sealed class IslandWindow : Window
         if (!_isExpanded) return;
         _isExpanded = false;
         _collapsedIcon.Content = BuildCollapsedIcon(_currentTab);
-        ResizeShellAndWindow(GetCollapsedWidth(), CollapsedHeight, CollapsedHeight / 2, FastAnimDuration);
+        CollapseShellAndWindow(FastAnimDuration);
         AnimateContentOpacity(0, onCompleted: () => _content.Visibility = Visibility.Hidden, FastAnimDuration);
         AnimateSettingsButtonOpacity(0, onCompleted: () => _settingsButton.Visibility = Visibility.Hidden, FastAnimDuration);
         AnimateCollapsedIconOpacity(1, FastAnimDuration);
@@ -1776,30 +1956,27 @@ public sealed class IslandWindow : Window
         return CollapsedWidth;
     }
 
+    // Purely a _shell-level animation - it never touches the real window.
+    // Callers that DO need the window involved (Expand's initial grow to
+    // ExpandedHeight, CollapseShellAndWindow's final shrink) do that
+    // themselves, once, outside of this function - see the comments there
+    // for why a resize animation is never a good time to also be resizing
+    // the HWND it lives inside.
     private void AnimateShell(double targetWidth, double targetHeight, double targetRadius, TimeSpan? duration = null, Action? onHeightCompleted = null)
     {
         var animDuration = duration ?? AnimDuration;
-        // A touch of spring overshoot on the way out (growing) reads as a
-        // premium "pop" instead of a mechanical resize; a small amplitude
-        // keeps it from looking bouncy or glitchy. Collapsing stays a plain
-        // ease-out - overshooting while shrinking would dip below the target
-        // size and pop back, which looks like a glitch, not polish. This is
-        // a pure animation-curve tweak (no brushes/effects), so it carries
-        // none of the alpha-compositing risk the earlier gradient sheen did.
-        // CornerRadius stays on a plain ease always - overshooting it (even
-        // by the same small amount as width/height) briefly swings the
-        // corner rounding past the target and back, which reads as the
-        // corners flickering/glitching right as the pill finishes expanding.
-        var growing = targetWidth > _shell.Width;
         var plainEase = new CubicEase { EasingMode = EasingMode.EaseOut };
-        EasingFunctionBase sizeEase = growing
-            ? new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.25 }
-            : plainEase;
 
-        var widthAnim = new DoubleAnimation(_shell.Width, targetWidth, animDuration) { EasingFunction = sizeEase };
-        var heightAnim = new DoubleAnimation(_shell.Height, targetHeight, animDuration) { EasingFunction = sizeEase };
-        if (onHeightCompleted != null) heightAnim.Completed += (_, _) => onHeightCompleted();
+        DebugTrace($"AnimateShell START fromW={_shell.Width:F1} fromH={_shell.Height:F1} toW={targetWidth:F1} toH={targetHeight:F1} dur={animDuration.TotalMilliseconds}");
+        var widthAnim = new DoubleAnimation(_shell.Width, targetWidth, animDuration) { EasingFunction = plainEase };
+        var heightAnim = new DoubleAnimation(_shell.Height, targetHeight, animDuration) { EasingFunction = plainEase };
         var radiusAnim = new CornerRadiusAnimation(_shell.CornerRadius, new CornerRadius(targetRadius), animDuration) { EasingFunction = plainEase };
+
+        heightAnim.Completed += (_, _) =>
+        {
+            DebugTrace($"AnimateShell shell height anim COMPLETED actualH={_shell.Height:F1} winTop={Top:F1} winH={Height:F1}");
+            onHeightCompleted?.Invoke();
+        };
 
         _shell.BeginAnimation(WidthProperty, widthAnim);
         _shell.BeginAnimation(HeightProperty, heightAnim);
