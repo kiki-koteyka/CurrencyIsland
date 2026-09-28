@@ -112,6 +112,57 @@ public sealed class CbrRatesProvider
         CnyRub = s.CnyRub
     };
 
+    // CBR's internal per-currency codes (NOT the CharCode - these are only
+    // used by the dynamic/range endpoint). Stable, undocumented but widely
+    // relied upon: USD=R01235, EUR=R01239, CNY=R01375.
+    private static readonly Dictionary<string, string> DynamicValCodes = new()
+    {
+        ["USD"] = "R01235",
+        ["EUR"] = "R01239",
+        ["CNY"] = "R01375"
+    };
+
+    // FetchHistoryAsync walks backward one day-request at a time, which is
+    // fine for a handful of days but would mean hundreds of requests for a
+    // month/year range. XML_dynamic.asp returns every published rate for
+    // ONE currency across an arbitrary date range in a single request -
+    // the right tool for "give me a year of USD", just not usable for the
+    // day-over-day 3-currency table this app's main view already has
+    // (it's one currency per call, not all three at once).
+    public async Task<List<(DateTime Date, double Rate)>> FetchDynamicRangeAsync(string charCode, DateTime from, DateTime to)
+    {
+        var points = new List<(DateTime, double)>();
+        if (!DynamicValCodes.TryGetValue(charCode, out var valCode)) return points;
+
+        try
+        {
+            var url = $"http://www.cbr.ru/scripts/XML_dynamic.asp?date_req1={from:dd/MM/yyyy}&date_req2={to:dd/MM/yyyy}&VAL_NM_RQ={valCode}";
+            var bytes = await Http.GetByteArrayAsync(url);
+            var xml = Encoding.GetEncoding("windows-1251").GetString(bytes);
+            var doc = XDocument.Parse(xml);
+
+            foreach (var record in doc.Root?.Elements("Record") ?? Enumerable.Empty<XElement>())
+            {
+                var dateAttr = (string?)record.Attribute("Date");
+                if (!DateTime.TryParseExact(dateAttr, "dd.MM.yyyy", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
+                    continue;
+
+                var nominal = double.Parse((string?)record.Element("Nominal") ?? "1", CultureInfo.InvariantCulture);
+                var valueRaw = ((string?)record.Element("Value") ?? "0").Replace(',', '.');
+                if (!double.TryParse(valueRaw, NumberStyles.Any, CultureInfo.InvariantCulture, out var value) || nominal == 0)
+                    continue;
+
+                points.Add((date, value / nominal));
+            }
+        }
+        catch
+        {
+            // best-effort - caller treats an empty list as "couldn't load"
+        }
+
+        return points;
+    }
+
     private async Task<CbrRatesSample> FetchForAsync(DateTime? date)
     {
         try

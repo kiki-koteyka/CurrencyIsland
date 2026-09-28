@@ -10,7 +10,8 @@ public sealed class SettingsData
     // false = boxed tooltip that follows the cursor (date + all 3 prices in
     // one card); true = crosshair - just a thin guide line and three small
     // colored value chips sitting right on each line, no box at all.
-    public bool ChartCrosshairHover { get; set; }
+    // Defaults true - the crosshair reads as the more polished of the two.
+    public bool ChartCrosshairHover { get; set; } = true;
 }
 
 public static class AppSettings
