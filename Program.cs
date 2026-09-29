@@ -1229,7 +1229,8 @@ public sealed class IslandWindow : Window
                 StrokeLineJoin = PenLineJoin.Round,
                 StrokeStartLineCap = PenLineCap.Round,
                 StrokeEndLineCap = PenLineCap.Round,
-                Width = 14, Height = 13
+                Stretch = Stretch.Uniform,
+                Width = 12.5, Height = 11
             };
         }
 
