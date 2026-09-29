@@ -80,7 +80,7 @@ public sealed class UpdatePromptWindow : FluentWindow
         {
             Width = 34,
             Height = 34,
-            Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#0F0F0F")!)
+            Foreground = new SolidColorBrush(Wpf.Ui.Appearance.ApplicationAccentColorManager.PrimaryAccent)
         });
         _progressRow.Children.Add(new TextBlock
         {

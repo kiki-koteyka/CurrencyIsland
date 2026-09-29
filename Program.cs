@@ -1055,7 +1055,7 @@ public sealed class IslandWindow : Window
         _rangeSpinner = new MorphSpinner
         {
             Width = 34, Height = 34,
-            Foreground = new SolidColorBrush(Color.FromArgb(215, 235, 235, 240)),
+            Foreground = new SolidColorBrush(Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent),
             HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
         };
         chartHost.Children.Add(_rangeSpinner);
@@ -1214,12 +1214,40 @@ public sealed class IslandWindow : Window
         return !(incoming == "." && current.Contains('.')) && prospective.Length <= 15;
     }
 
+    private const int AedIndex = 3;
+
+    private FrameworkElement CurrencySymbol(int currency)
+    {
+        var accent = new SolidColorBrush(CalcAccent(currency));
+        if (currency == AedIndex)
+        {
+            return new ShapePath
+            {
+                Data = Geometry.Parse("M3.2,1.5 L6.6,1.5 C10.4,1.5 12,3.7 12,6.5 C12,9.3 10.4,11.5 6.6,11.5 L3.2,11.5 Z M1,4.9 L12.8,4.9 M1,8.1 L12.8,8.1"),
+                Stroke = accent,
+                StrokeThickness = 1.4,
+                StrokeLineJoin = PenLineJoin.Round,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+                Width = 14, Height = 13
+            };
+        }
+
+        return new TextBlock
+        {
+            Text = CalcSymbols[currency],
+            FontSize = 12, FontWeight = FontWeights.Bold, FontFamily = ValueFont,
+            Foreground = accent,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+    }
+
     private static readonly int[] AllCurrencies = { 0, 1, 2, 3, 4 };
     private static readonly int[] ChartCurrencies = { 0, 1, 2, 3 };
 
     private Border BuildCurrencyChip(IReadOnlyList<int> options, int initial, Action<int> onPick, out Action<int> refresh)
     {
-        var symbolText = new TextBlock { FontSize = 12, FontWeight = FontWeights.Bold, FontFamily = ValueFont, VerticalAlignment = VerticalAlignment.Center };
+        var symbolHost = new ContentControl { VerticalAlignment = VerticalAlignment.Center, IsTabStop = false };
         var codeText = new TextBlock { FontSize = 12, FontFamily = LabelFont, Foreground = Brushes.White, Margin = new Thickness(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center };
         var chevron = new ShapePath
         {
@@ -1230,7 +1258,7 @@ public sealed class IslandWindow : Window
         };
 
         var content = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        content.Children.Add(symbolText);
+        content.Children.Add(symbolHost);
         content.Children.Add(codeText);
         content.Children.Add(chevron);
 
@@ -1246,8 +1274,7 @@ public sealed class IslandWindow : Window
 
         Action<int> refreshLocal = currency =>
         {
-            symbolText.Text = CalcSymbols[currency];
-            symbolText.Foreground = new SolidColorBrush(CalcAccent(currency));
+            symbolHost.Content = CurrencySymbol(currency);
             codeText.Text = CalcCodes[currency];
         };
         refresh = refreshLocal;
@@ -1274,13 +1301,21 @@ public sealed class IslandWindow : Window
 
         foreach (var idx in options)
         {
-            var itemText = new TextBlock
+            var itemRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(10, 6, 12, 6) };
+            var itemSymbol = CurrencySymbol(idx);
+            itemSymbol.HorizontalAlignment = HorizontalAlignment.Center;
+            itemSymbol.VerticalAlignment = VerticalAlignment.Center;
+            var symbolCell = new Grid { Width = 18 };
+            symbolCell.Children.Add(itemSymbol);
+            itemRow.Children.Add(symbolCell);
+            itemRow.Children.Add(new TextBlock
             {
-                Text = $"{CalcSymbols[idx]}  {CalcCodes[idx]}",
+                Text = CalcCodes[idx],
                 FontSize = 12, FontFamily = LabelFont, Foreground = Brushes.White,
-                Margin = new Thickness(10, 6, 10, 6)
-            };
-            var item = new Border { Background = Brushes.Transparent, Cursor = Cursors.Hand, Child = itemText };
+                Margin = new Thickness(6, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            var item = new Border { Background = Brushes.Transparent, Cursor = Cursors.Hand, Child = itemRow };
             item.MouseEnter += (_, _) => item.Background = new SolidColorBrush(Color.FromArgb(28, 255, 255, 255));
             item.MouseLeave += (_, _) => item.Background = Brushes.Transparent;
             item.MouseLeftButtonUp += (_, e) =>
