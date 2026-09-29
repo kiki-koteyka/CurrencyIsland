@@ -218,7 +218,7 @@ public sealed class IslandWindow : Window
         _shell.MouseLeave += (_, _) =>
         {
             _isMouseOverShell = IsCursorOverHoverZone();
-            if (!_isMouseOverShell && !_dragging && !_resizingTab) Collapse();
+            if (!_isMouseOverShell && !_dragging && !_resizingTab && _openDropdown is not { IsOpen: true }) Collapse();
         };
         _shell.MouseLeftButtonDown += OnShellMouseDown;
         _shell.MouseMove += OnShellMouseMove;
@@ -1332,6 +1332,8 @@ public sealed class IslandWindow : Window
         MouseButtonEventHandler? outsideClickHandler = null;
         popup.Opened += (_, _) =>
         {
+            _openDropdown = popup;
+            _openDropdownBorder = popupBorder;
             outsideClickHandler = (_, e2) =>
             {
                 if (e2.OriginalSource is DependencyObject src && (IsDescendantOf(src, chip) || IsDescendantOf(src, popupBorder))) return;
@@ -1341,6 +1343,7 @@ public sealed class IslandWindow : Window
         };
         popup.Closed += (_, _) =>
         {
+            if (ReferenceEquals(_openDropdown, popup)) { _openDropdown = null; _openDropdownBorder = null; }
             if (outsideClickHandler != null) { PreviewMouseDown -= outsideClickHandler; outsideClickHandler = null; }
         };
 
@@ -2507,8 +2510,17 @@ public sealed class IslandWindow : Window
     // _shell's own (animating) bounds. See the comment by _shell.MouseEnter
     // for why trusting the live hit-test result causes a self-sustaining
     // resize oscillation.
+    private System.Windows.Controls.Primitives.Popup? _openDropdown;
+    private Border? _openDropdownBorder;
+
+    private void CloseDropdown()
+    {
+        if (_openDropdown is { IsOpen: true } popup) popup.IsOpen = false;
+    }
+
     private bool IsCursorOverHoverZone()
     {
+        if (_openDropdownBorder is { IsMouseOver: true }) return true;
         var cursor = GetCursorScreenDip();
         var pillLeft = PillLeftFromWindow(Left, _hoverZoneWidth);
         var pillTop = PillTopFromWindow(Top, _hoverZoneHeight, _hoverZoneHeight);
@@ -2581,6 +2593,7 @@ public sealed class IslandWindow : Window
     {
         if (!_isExpanded) return;
         _isExpanded = false;
+        CloseDropdown();
         _collapsedIcon.Content = BuildCollapsedIcon(_currentTab);
         CollapseShellAndWindow(AnimDuration);
         // Matched to AnimDuration (not the shorter default) so these are
@@ -2609,6 +2622,7 @@ public sealed class IslandWindow : Window
     {
         if (!_isExpanded) return;
         _isExpanded = false;
+        CloseDropdown();
         _collapsedIcon.Content = BuildCollapsedIcon(_currentTab);
         CollapseShellAndWindow(FastAnimDuration);
         AnimateContentOpacity(0, onCompleted: () => _content.Visibility = Visibility.Hidden, FastAnimDuration);
