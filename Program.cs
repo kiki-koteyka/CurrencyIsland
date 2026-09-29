@@ -34,28 +34,31 @@ public sealed class IslandWindow : Window
     private const double CollapsedHeight = 34;
     private const double ExpandedWidth = 380;
     // The fixed OS window is sized once for whichever tab needs the most
-    // room (now the calculator tab - amount rows + rate line + its own
-    // small range chart). Content is vertically centered within it, so
+    // room (the chart tab). Content is vertically centered within it, so
     // this has to track whatever TabExpandedHeight's own max actually is.
-    private const double ExpandedHeight = 250;
+    private const double ExpandedHeight = 178;
 
     // Per-tab expanded heights - the table only needs ~95px of content, the
-    // chart needs ~170px, the calculator (amount rows + rate line + its own
-    // small chart + range buttons) needs the most. Index matches
+    // chart needs ~170px, the calculator (two amount rows + swap + rate
+    // line) sits in between. Index matches
     // CurrencyTabIndex/ChartTabIndex/CalculatorTabIndex. ExpandedHeight
     // above stays the conservative MAX of this array, still used by the
     // pre-expand corner/growth-alignment math (deciding which corner to
     // grow from before anything has actually resized) so that math never
     // under-estimates how much room the pill might need.
-    private static readonly double[] TabExpandedHeight = { 138, 178, 250 };
+    private static readonly double[] TabExpandedHeight = { 138, 178, 152, 168 };
     private const double EdgeMargin = 0;
     private const double TopEdgeMargin = 0;
     private const double BottomEdgeMargin = 0;
     private const double SnapThreshold = 14;
-    private const int TabCount = 3;
+    private const int TabCount = 4;
+    // Content column starts at the root Grid's 18px left margin, so this
+    // is what puts a ChartWidth-wide view on the pill's own horizontal center.
+    private const double CenteredTabLeftMargin = (ExpandedWidth - 300) / 2 - 18;
     private const int CurrencyTabIndex = 0;
     private const int ChartTabIndex = 1;
     private const int CalculatorTabIndex = 2;
+    private const int RangeTabIndex = 3;
     private static readonly TimeSpan CurrencyCacheLifetime = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan AnimDuration = TimeSpan.FromMilliseconds(220);
 
@@ -360,6 +363,7 @@ public sealed class IslandWindow : Window
         _tabViews[CurrencyTabIndex] = BuildRatesView();
         _tabViews[ChartTabIndex] = BuildChartView();
         _tabViews[CalculatorTabIndex] = BuildCalculatorView();
+        _tabViews[RangeTabIndex] = BuildRangeView();
 
         _collapsedIcon = new ContentControl
         {
@@ -400,7 +404,7 @@ public sealed class IslandWindow : Window
         var dimHeader = new SolidColorBrush(Color.FromArgb(120, 235, 235, 240));
         var captionText = new TextBlock
         {
-            Text = "Курс ЦБ на", FontSize = 10, FontFamily = LabelFont, Foreground = dimHeader,
+            Text = "CBR rate on", FontSize = 10, FontFamily = LabelFont, Foreground = dimHeader,
             VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 3)
         };
         Grid.SetRow(captionText, 0);
@@ -791,31 +795,23 @@ public sealed class IslandWindow : Window
     // Currency codes/symbols/accents for the calculator's two selector
     // chips - RUB is the base currency, so it always converts 1:1 and
     // never gets its own trend chart (see LoadCalcRangeAsync).
-    private static readonly string[] CalcCodes = { "USD", "EUR", "CNY", "RUB" };
-    private static readonly string[] CalcSymbols = { "$", "€", "¥", "₽" };
-    private Color CalcAccent(int i) => i switch { 0 => UsdAccent, 1 => EurAccent, 2 => CnyAccent, _ => Colors.White };
+    private static readonly string[] CalcCodes = { "USD", "EUR", "CNY", "AED", "RUB" };
+    private static readonly string[] CalcSymbols = { "$", "€", "¥", "Dh", "₽" };
+    private Color CalcAccent(int i) => i switch { 0 => UsdAccent, 1 => EurAccent, 2 => CnyAccent, 3 => AedAccent, _ => Colors.White };
 
     private int _calcFromCurrency;
-    private int _calcToCurrency = 3; // RUB
+    private const int CalcRubIndex = 4;
+    private int _calcToCurrency = CalcRubIndex;
     private CbrHistoryPoint? _calcLatest;
-    private bool _calcRangeIsYear;
-    private List<(DateTime Date, double Rate)>? _calcRangePoints;
     private TextBox _calcAmountBox = null!;
     private TextBlock _calcResultText = null!;
-    private TextBlock _calcFromLabel = null!;
-    private TextBlock _calcToLabel = null!;
+    private Action<int> _calcFromRefresh = null!;
+    private Action<int> _calcToRefresh = null!;
     private TextBlock _calcRateText = null!;
-    private TextBlock _calcChangeText = null!;
-    private Border _calcMonthButton = null!;
-    private Border _calcYearButton = null!;
-    private Canvas _calcChartCanvas = null!;
-    private ShapePath _calcChartLine = null!;
-    private ShapePath _calcChartFill = null!;
-    private TextBlock _calcChartEmptyText = null!;
 
     private FrameworkElement BuildCalculatorView()
     {
-        var root = new StackPanel { Width = ChartWidth, VerticalAlignment = VerticalAlignment.Center };
+        var root = new StackPanel { Width = ChartWidth, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(CenteredTabLeftMargin, 0, 0, 0) };
 
         // One card behind the whole calculator (both amount fields, the
         // swap button, rate/change lines) - visually separates it from the
@@ -828,8 +824,7 @@ public sealed class IslandWindow : Window
         {
             Background = new SolidColorBrush(Color.FromArgb(16, 255, 255, 255)),
             CornerRadius = new CornerRadius(12),
-            Padding = new Thickness(10, 7, 10, 7),
-            Margin = new Thickness(0, 0, 0, 6)
+            Padding = new Thickness(10, 7, 10, 7)
         };
         var cardContent = new StackPanel();
         card.Child = cardContent;
@@ -870,7 +865,7 @@ public sealed class IslandWindow : Window
         _calcAmountBox.PreviewTextInput += (_, e) => e.Handled = !IsValidAmountInput(_calcAmountBox.Text, e.Text);
         Grid.SetColumn(_calcAmountBox, 0);
         amountRow.Children.Add(_calcAmountBox);
-        var fromChip = BuildCalcChip(isFrom: true, out _calcFromLabel);
+        var fromChip = BuildCurrencyChip(AllCurrencies, _calcFromCurrency, c => { _calcFromCurrency = c; RecalculateCalculator(); }, out _calcFromRefresh);
         Grid.SetColumn(fromChip, 1);
         amountRow.Children.Add(fromChip);
         amountField.Child = amountRow;
@@ -915,7 +910,7 @@ public sealed class IslandWindow : Window
         };
         Grid.SetColumn(_calcResultText, 0);
         resultRow.Children.Add(_calcResultText);
-        var toChip = BuildCalcChip(isFrom: false, out _calcToLabel);
+        var toChip = BuildCurrencyChip(AllCurrencies, _calcToCurrency, c => { _calcToCurrency = c; RecalculateCalculator(); }, out _calcToRefresh);
         Grid.SetColumn(toChip, 1);
         resultRow.Children.Add(toChip);
         resultField.Child = resultRow;
@@ -928,39 +923,287 @@ public sealed class IslandWindow : Window
         };
         cardContent.Children.Add(_calcRateText);
 
-        var changeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(2, 0, 0, 0) };
-        _calcChangeText = new TextBlock { FontSize = 10, FontFamily = LabelFont };
-        changeRow.Children.Add(_calcChangeText);
-        cardContent.Children.Add(changeRow);
-
         root.Children.Add(card);
+        return root;
+    }
 
-        _calcMonthButton = BuildCalcRangeButton("Месяц", isYear: false);
-        _calcYearButton = BuildCalcRangeButton("Год", isYear: true);
-        var rangeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
-        rangeRow.Children.Add(_calcMonthButton);
-        rangeRow.Children.Add(_calcYearButton);
-        root.Children.Add(rangeRow);
+    private int _rangeCurrency;
+    private bool _rangeIsYear;
+    private List<(DateTime Date, double Rate)>? _rangePoints;
+    private readonly List<Point> _rangeChartPoints = new();
+    private Color _rangeLineColor = Colors.White;
+    private Action<int> _rangeChipRefresh = null!;
+    private TextBlock _rangeRateText = null!;
+    private TextBlock _rangeChangeText = null!;
+    private Border _rangeMonthButton = null!;
+    private Border _rangeYearButton = null!;
+    private Canvas _rangeCanvas = null!;
+    private ShapePath _rangeLine = null!;
+    private ShapePath _rangeFill = null!;
+    private TextBlock _rangeEmptyText = null!;
+    private MorphSpinner _rangeSpinner = null!;
+    private Line _rangeHoverGuide = null!;
+    private Ellipse _rangeHoverMarker = null!;
+    private Ellipse _rangeEndMarker = null!;
+    private Border _rangeHoverPill = null!;
+    private TextBlock _rangeHoverPillText = null!;
+    private const double RangeChartHeight = 92;
+    private const double RangeChartWidth = ChartWidth - 34;
 
-        const double calcChartHeight = 58;
-        var chartHost = new Grid { Height = calcChartHeight };
-        _calcChartCanvas = new Canvas { Width = ChartWidth, Height = calcChartHeight, Background = Brushes.Transparent };
-        _calcChartFill = new ShapePath { StrokeThickness = 0 };
-        _calcChartLine = new ShapePath { StrokeThickness = 1.6, StrokeStartLineCap = PenLineCap.Round, StrokeLineJoin = PenLineJoin.Round };
-        _calcChartCanvas.Children.Add(_calcChartFill);
-        _calcChartCanvas.Children.Add(_calcChartLine);
-        chartHost.Children.Add(_calcChartCanvas);
-        _calcChartEmptyText = new TextBlock
+    private FrameworkElement BuildRangeView()
+    {
+        var root = new StackPanel { Width = ChartWidth, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(CenteredTabLeftMargin, 0, 0, 0) };
+
+        var header = new Grid { Margin = new Thickness(0, 0, 0, 6) };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var chip = BuildCurrencyChip(ChartCurrencies, _rangeCurrency, c => { _rangeCurrency = c; _ = LoadRangeAsync(); }, out _rangeChipRefresh);
+        chip.HorizontalAlignment = HorizontalAlignment.Left;
+        Grid.SetColumn(chip, 0);
+        header.Children.Add(chip);
+
+        _rangeMonthButton = BuildRangeSegment("Month", isYear: false);
+        _rangeYearButton = BuildRangeSegment("Year", isYear: true);
+        var segRow = new StackPanel { Orientation = Orientation.Horizontal };
+        segRow.Children.Add(_rangeMonthButton);
+        segRow.Children.Add(_rangeYearButton);
+        var segSwitch = new Border
         {
-            Text = "Загрузка...", FontSize = 11, FontFamily = LabelFont,
+            Background = new SolidColorBrush(Color.FromArgb(20, 255, 255, 255)),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(2),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = segRow
+        };
+        Grid.SetColumn(segSwitch, 1);
+        header.Children.Add(segSwitch);
+        root.Children.Add(header);
+
+        var rateRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(2, 0, 0, 5) };
+        _rangeRateText = new TextBlock
+        {
+            FontSize = 16, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
+            Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Bottom
+        };
+        _rangeChangeText = new TextBlock
+        {
+            FontSize = 10, FontFamily = LabelFont, Margin = new Thickness(8, 0, 0, 2),
+            VerticalAlignment = VerticalAlignment.Bottom
+        };
+        rateRow.Children.Add(_rangeRateText);
+        rateRow.Children.Add(_rangeChangeText);
+        root.Children.Add(rateRow);
+
+        var chartHost = new Grid { Height = RangeChartHeight, Width = RangeChartWidth, HorizontalAlignment = HorizontalAlignment.Left };
+        _rangeCanvas = new Canvas { Width = RangeChartWidth, Height = RangeChartHeight, Background = Brushes.Transparent };
+        for (var g = 1; g <= 2; g++)
+        {
+            _rangeCanvas.Children.Add(new Line
+            {
+                X1 = 0, X2 = RangeChartWidth,
+                Y1 = RangeChartHeight * g / 3.0, Y2 = RangeChartHeight * g / 3.0,
+                Stroke = new SolidColorBrush(Color.FromArgb(18, 255, 255, 255)),
+                StrokeThickness = 1
+            });
+        }
+        _rangeFill = new ShapePath { StrokeThickness = 0 };
+        _rangeLine = new ShapePath { StrokeThickness = 2.2, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, StrokeLineJoin = PenLineJoin.Round };
+        _rangeCanvas.Children.Add(_rangeFill);
+        _rangeCanvas.Children.Add(_rangeLine);
+        _rangeHoverGuide = new Line
+        {
+            Y1 = 0, Y2 = RangeChartHeight,
+            Stroke = new SolidColorBrush(Color.FromArgb(90, 255, 255, 255)),
+            StrokeThickness = 1, Visibility = Visibility.Hidden, IsHitTestVisible = false
+        };
+        _rangeCanvas.Children.Add(_rangeHoverGuide);
+        _rangeEndMarker = new Ellipse
+        {
+            Width = 5.5, Height = 5.5, Visibility = Visibility.Hidden, IsHitTestVisible = false,
+            Stroke = new SolidColorBrush(Color.FromArgb(248, 12, 12, 14)), StrokeThickness = 1.2
+        };
+        _rangeCanvas.Children.Add(_rangeEndMarker);
+        _rangeHoverMarker = new Ellipse
+        {
+            Width = 7, Height = 7, Visibility = Visibility.Hidden, IsHitTestVisible = false,
+            Stroke = new SolidColorBrush(Color.FromArgb(248, 12, 12, 14)), StrokeThickness = 1.2
+        };
+        _rangeCanvas.Children.Add(_rangeHoverMarker);
+        _rangeHoverPillText = new TextBlock { FontSize = 10.5, FontFamily = LabelFont, Foreground = Brushes.White };
+        _rangeHoverPill = new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(26, 26, 29)),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(70, 255, 255, 255)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(7, 2, 7, 3),
+            Visibility = Visibility.Hidden, IsHitTestVisible = false,
+            Child = _rangeHoverPillText
+        };
+        _rangeCanvas.Children.Add(_rangeHoverPill);
+        _rangeCanvas.MouseMove += OnRangeChartMouseMove;
+        _rangeCanvas.MouseLeave += (_, _) => HideRangeHover();
+        chartHost.Children.Add(_rangeCanvas);
+        _rangeEmptyText = new TextBlock
+        {
+            Text = "No data", FontSize = 11, FontFamily = LabelFont,
             Foreground = new SolidColorBrush(Color.FromArgb(120, 235, 235, 240)),
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+            Visibility = Visibility.Collapsed
+        };
+        chartHost.Children.Add(_rangeEmptyText);
+        _rangeSpinner = new MorphSpinner
+        {
+            Width = 34, Height = 34,
+            Foreground = new SolidColorBrush(Color.FromArgb(215, 235, 235, 240)),
             HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
         };
-        chartHost.Children.Add(_calcChartEmptyText);
+        chartHost.Children.Add(_rangeSpinner);
         root.Children.Add(chartHost);
 
-        UpdateCalcRangeButtons();
+        UpdateRangeSegments();
         return root;
+    }
+
+    private Border BuildRangeSegment(string label, bool isYear)
+    {
+        var text = new TextBlock { Text = label, FontSize = 10, FontFamily = LabelFont, Foreground = Brushes.White, HorizontalAlignment = HorizontalAlignment.Center };
+        var button = new Border
+        {
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(11, 2, 11, 2),
+            Cursor = Cursors.Hand,
+            Child = text
+        };
+        button.MouseLeftButtonDown += (_, e) =>
+        {
+            e.Handled = true;
+            if (_rangeIsYear == isYear) return;
+            _rangeIsYear = isYear;
+            UpdateRangeSegments();
+            _ = LoadRangeAsync();
+        };
+        return button;
+    }
+
+    private void UpdateRangeSegments()
+    {
+        var activeBg = new SolidColorBrush(Color.FromArgb(70, 255, 255, 255));
+        var inactiveText = new SolidColorBrush(Color.FromArgb(150, 235, 235, 240));
+        _rangeMonthButton.Background = !_rangeIsYear ? activeBg : Brushes.Transparent;
+        _rangeYearButton.Background = _rangeIsYear ? activeBg : Brushes.Transparent;
+        ((TextBlock)_rangeMonthButton.Child).Foreground = !_rangeIsYear ? Brushes.White : inactiveText;
+        ((TextBlock)_rangeYearButton.Child).Foreground = _rangeIsYear ? Brushes.White : inactiveText;
+    }
+
+    private async Task LoadRangeAsync()
+    {
+        var requestedCurrency = _rangeCurrency;
+        var requestedYear = _rangeIsYear;
+        _rangePoints = null;
+        RenderRangeChart();
+
+        var to = DateTime.Today;
+        var from = to.AddDays(requestedYear ? -365 : -30);
+        var points = await _rates.FetchDynamicRangeAsync(CalcCodes[requestedCurrency], from, to);
+
+        if (requestedCurrency != _rangeCurrency || requestedYear != _rangeIsYear) return;
+
+        _rangePoints = points;
+        RenderRangeChart();
+    }
+
+    private void RenderRangeChart()
+    {
+        if (_rangePoints is not { Count: >= 2 } points)
+        {
+            var loading = _rangePoints == null;
+            _rangeSpinner.Visibility = loading ? Visibility.Visible : Visibility.Collapsed;
+            _rangeEmptyText.Visibility = loading ? Visibility.Collapsed : Visibility.Visible;
+            _rangeLine.Data = null;
+            _rangeFill.Data = null;
+            _rangeChartPoints.Clear();
+            _rangeEndMarker.Visibility = Visibility.Hidden;
+            HideRangeHover();
+            _rangeRateText.Text = "";
+            _rangeChangeText.Text = "";
+            return;
+        }
+
+        _rangeEmptyText.Visibility = Visibility.Collapsed;
+        _rangeSpinner.Visibility = Visibility.Collapsed;
+
+        const double pad = 3;
+        var height = RangeChartHeight;
+        var width = RangeChartWidth;
+        var min = points.Min(p => p.Rate);
+        var max = points.Max(p => p.Rate);
+        var range = Math.Max(max - min, 0.0001);
+
+        _rangeChartPoints.Clear();
+        for (var i = 0; i < points.Count; i++)
+            _rangeChartPoints.Add(new Point(width * i / (points.Count - 1), pad + (1 - (points[i].Rate - min) / range) * (height - 2 * pad)));
+
+        var rising = points[^1].Rate >= points[0].Rate;
+        var lineColor = rising ? TrendUpColor : TrendDownColor;
+        _rangeLineColor = lineColor;
+        _rangeLine.Data = BuildSmoothGeometry(_rangeChartPoints, fillToY: null);
+        _rangeLine.Stroke = new SolidColorBrush(lineColor);
+        _rangeFill.Data = BuildSmoothGeometry(_rangeChartPoints, fillToY: height);
+        _rangeFill.Fill = new LinearGradientBrush(
+            new GradientStopCollection
+            {
+                new GradientStop(Color.FromArgb(70, lineColor.R, lineColor.G, lineColor.B), 0),
+                new GradientStop(Color.FromArgb(0, lineColor.R, lineColor.G, lineColor.B), 1)
+            },
+            new Point(0, 0), new Point(0, 1));
+
+        var last = _rangeChartPoints[^1];
+        _rangeEndMarker.Fill = new SolidColorBrush(lineColor);
+        Canvas.SetLeft(_rangeEndMarker, last.X - 2.75);
+        Canvas.SetTop(_rangeEndMarker, last.Y - 2.75);
+        _rangeEndMarker.Visibility = Visibility.Visible;
+        HideRangeHover();
+
+        var delta = points[^1].Rate - points[0].Rate;
+        var deltaPct = points[0].Rate == 0 ? 0 : delta / points[0].Rate * 100;
+        var arrow = delta >= 0 ? "▲" : "▼";
+        _rangeRateText.Text = $"{points[^1].Rate:0.00} ₽";
+        _rangeChangeText.Text = $"{arrow} {delta:+0.00;-0.00} ₽  {deltaPct:+0.0;-0.0}% past {(_rangeIsYear ? "year" : "month")}";
+        _rangeChangeText.Foreground = new SolidColorBrush(lineColor);
+    }
+
+    private void HideRangeHover()
+    {
+        _rangeHoverGuide.Visibility = Visibility.Hidden;
+        _rangeHoverMarker.Visibility = Visibility.Hidden;
+        _rangeHoverPill.Visibility = Visibility.Hidden;
+    }
+
+    private void OnRangeChartMouseMove(object sender, MouseEventArgs e)
+    {
+        if (_rangePoints is not { Count: >= 2 } points || _rangeChartPoints.Count != points.Count) return;
+
+        var n = points.Count;
+        var idx = Math.Clamp((int)Math.Round(e.GetPosition(_rangeCanvas).X / (RangeChartWidth / (n - 1))), 0, n - 1);
+        var pt = _rangeChartPoints[idx];
+
+        _rangeHoverGuide.X1 = pt.X;
+        _rangeHoverGuide.X2 = pt.X;
+        _rangeHoverGuide.Visibility = Visibility.Visible;
+
+        _rangeHoverMarker.Fill = new SolidColorBrush(_rangeLineColor);
+        Canvas.SetLeft(_rangeHoverMarker, pt.X - 3.5);
+        Canvas.SetTop(_rangeHoverMarker, pt.Y - 3.5);
+        _rangeHoverMarker.Visibility = Visibility.Visible;
+
+        var date = points[idx].Date.ToString("d MMM yyyy", System.Globalization.CultureInfo.GetCultureInfo("en-US"));
+        _rangeHoverPillText.Text = $"{date}   {points[idx].Rate:0.00}";
+        _rangeHoverPill.Visibility = Visibility.Visible;
+        _rangeHoverPill.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var size = _rangeHoverPill.DesiredSize;
+        Canvas.SetLeft(_rangeHoverPill, Math.Clamp(pt.X - size.Width / 2, 0, RangeChartWidth - size.Width));
+        Canvas.SetTop(_rangeHoverPill, pt.Y < size.Height + 8 ? RangeChartHeight - size.Height : 0);
     }
 
     private static bool IsValidAmountInput(string current, string incoming)
@@ -971,11 +1214,13 @@ public sealed class IslandWindow : Window
         return !(incoming == "." && current.Contains('.')) && prospective.Length <= 15;
     }
 
-    private Border BuildCalcChip(bool isFrom, out TextBlock label)
+    private static readonly int[] AllCurrencies = { 0, 1, 2, 3, 4 };
+    private static readonly int[] ChartCurrencies = { 0, 1, 2, 3 };
+
+    private Border BuildCurrencyChip(IReadOnlyList<int> options, int initial, Action<int> onPick, out Action<int> refresh)
     {
         var symbolText = new TextBlock { FontSize = 12, FontWeight = FontWeights.Bold, FontFamily = ValueFont, VerticalAlignment = VerticalAlignment.Center };
         var codeText = new TextBlock { FontSize = 12, FontFamily = LabelFont, Foreground = Brushes.White, Margin = new Thickness(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center };
-        label = codeText;
         var chevron = new ShapePath
         {
             Data = Geometry.Parse("M0,0 L4,4 L8,0"),
@@ -999,22 +1244,16 @@ public sealed class IslandWindow : Window
             Child = content
         };
 
-        var list = new StackPanel();
-        for (var i = 0; i < CalcCodes.Length; i++)
+        Action<int> refreshLocal = currency =>
         {
-            var idx = i;
-            var itemText = new TextBlock
-            {
-                Text = $"{CalcSymbols[i]}  {CalcCodes[i]}",
-                FontSize = 12, FontFamily = LabelFont, Foreground = Brushes.White,
-                Margin = new Thickness(10, 6, 10, 6)
-            };
-            var item = new Border { Background = Brushes.Transparent, Cursor = Cursors.Hand, Child = itemText };
-            item.MouseEnter += (_, _) => item.Background = new SolidColorBrush(Color.FromArgb(28, 255, 255, 255));
-            item.MouseLeave += (_, _) => item.Background = Brushes.Transparent;
-            list.Children.Add(item);
-        }
+            symbolText.Text = CalcSymbols[currency];
+            symbolText.Foreground = new SolidColorBrush(CalcAccent(currency));
+            codeText.Text = CalcCodes[currency];
+        };
+        refresh = refreshLocal;
+        refreshLocal(initial);
 
+        var list = new StackPanel();
         var popupBorder = new Border
         {
             Background = new SolidColorBrush(Color.FromArgb(250, 24, 24, 27)),
@@ -1023,7 +1262,6 @@ public sealed class IslandWindow : Window
             CornerRadius = new CornerRadius(8),
             Child = list
         };
-
         var popup = new System.Windows.Controls.Primitives.Popup
         {
             PlacementTarget = chip,
@@ -1034,15 +1272,25 @@ public sealed class IslandWindow : Window
             Child = popupBorder
         };
 
-        for (var i = 0; i < CalcCodes.Length; i++)
+        foreach (var idx in options)
         {
-            var idx = i;
-            ((Border)list.Children[i]).MouseLeftButtonUp += (_, e) =>
+            var itemText = new TextBlock
+            {
+                Text = $"{CalcSymbols[idx]}  {CalcCodes[idx]}",
+                FontSize = 12, FontFamily = LabelFont, Foreground = Brushes.White,
+                Margin = new Thickness(10, 6, 10, 6)
+            };
+            var item = new Border { Background = Brushes.Transparent, Cursor = Cursors.Hand, Child = itemText };
+            item.MouseEnter += (_, _) => item.Background = new SolidColorBrush(Color.FromArgb(28, 255, 255, 255));
+            item.MouseLeave += (_, _) => item.Background = Brushes.Transparent;
+            item.MouseLeftButtonUp += (_, e) =>
             {
                 e.Handled = true;
-                SetCalcCurrency(isFrom, idx);
+                refreshLocal(idx);
+                onPick(idx);
                 popup.IsOpen = false;
             };
+            list.Children.Add(item);
         }
 
         MouseButtonEventHandler? outsideClickHandler = null;
@@ -1067,8 +1315,6 @@ public sealed class IslandWindow : Window
             popup.IsOpen = !popup.IsOpen;
         };
 
-        RefreshCalcChip(symbolText, codeText, isFrom ? _calcFromCurrency : _calcToCurrency);
-        chip.Tag = symbolText;
         return chip;
     }
 
@@ -1082,35 +1328,12 @@ public sealed class IslandWindow : Window
         return false;
     }
 
-    private void RefreshCalcChip(TextBlock symbolText, TextBlock codeText, int currency)
-    {
-        symbolText.Text = CalcSymbols[currency];
-        symbolText.Foreground = new SolidColorBrush(CalcAccent(currency));
-        codeText.Text = CalcCodes[currency];
-    }
-
-    private void SetCalcCurrency(bool isFrom, int currency)
-    {
-        if (isFrom) _calcFromCurrency = currency; else _calcToCurrency = currency;
-        RefreshCalcChip(FindCalcSymbolText(isFrom), isFrom ? _calcFromLabel : _calcToLabel, currency);
-        RecalculateCalculator();
-        _ = LoadCalcRangeAsync();
-    }
-
-    private TextBlock FindCalcSymbolText(bool isFrom)
-    {
-        var label = isFrom ? _calcFromLabel : _calcToLabel;
-        var content = (StackPanel)label.Parent;
-        return (TextBlock)content.Children[0];
-    }
-
     private void SwapCalcCurrencies()
     {
         (_calcFromCurrency, _calcToCurrency) = (_calcToCurrency, _calcFromCurrency);
-        RefreshCalcChip(FindCalcSymbolText(true), _calcFromLabel, _calcFromCurrency);
-        RefreshCalcChip(FindCalcSymbolText(false), _calcToLabel, _calcToCurrency);
+        _calcFromRefresh(_calcFromCurrency);
+        _calcToRefresh(_calcToCurrency);
         RecalculateCalculator();
-        _ = LoadCalcRangeAsync();
     }
 
     private double RateToRub(int currency) => currency switch
@@ -1118,6 +1341,7 @@ public sealed class IslandWindow : Window
         0 => _calcLatest?.UsdRub ?? 0,
         1 => _calcLatest?.EurRub ?? 0,
         2 => _calcLatest?.CnyRub ?? 0,
+        3 => _calcLatest?.AedRub ?? 0,
         _ => 1
     };
 
@@ -1137,132 +1361,14 @@ public sealed class IslandWindow : Window
         }
     }
 
-    // Which side of the pair actually has CBR history - RUB itself has no
-    // rate to chart, so if the user picked RUB on one side, the chart just
-    // follows whichever side isn't RUB (preferring "from" when NEITHER
-    // side is RUB, which only happens for a foreign/foreign pair - a
-    // straight USD/EUR cross rate chart isn't worth the extra endpoint
-    // calls for how rarely that combination gets picked).
-    private int CalcChartCurrency => _calcFromCurrency != 3 ? _calcFromCurrency : _calcToCurrency;
-
-    private async Task LoadCalcRangeAsync()
-    {
-        var currency = CalcChartCurrency;
-        if (currency == 3)
-        {
-            _calcRangePoints = null;
-            RenderCalcChart();
-            return;
-        }
-
-        var requestedCurrency = currency;
-        var requestedYear = _calcRangeIsYear;
-        var to = DateTime.Today;
-        var from = to.AddDays(_calcRangeIsYear ? -365 : -30);
-        var points = await _rates.FetchDynamicRangeAsync(CalcCodes[currency], from, to);
-
-        // Stale-response guard - a fast currency/range flip can leave an
-        // older request finishing after a newer one already landed.
-        if (requestedCurrency != CalcChartCurrency || requestedYear != _calcRangeIsYear) return;
-
-        _calcRangePoints = points;
-        RenderCalcChart();
-    }
-
-    private void RenderCalcChart()
-    {
-        _calcChartCanvas.Width = ChartWidth;
-        if (_calcRangePoints is not { Count: >= 2 } points)
-        {
-            _calcChartEmptyText.Visibility = Visibility.Visible;
-            _calcChartEmptyText.Text = _calcRangePoints == null ? "" : "Нет данных";
-            _calcChartLine.Data = null;
-            _calcChartFill.Data = null;
-            _calcChangeText.Text = "";
-            return;
-        }
-
-        _calcChartEmptyText.Visibility = Visibility.Collapsed;
-
-        var height = _calcChartCanvas.Height;
-        var width = ChartWidth;
-        var min = points.Min(p => p.Rate);
-        var max = points.Max(p => p.Rate);
-        var range = Math.Max(max - min, 0.0001);
-
-        double XAt(int i) => width * i / (points.Count - 1);
-        double YAt(double rate) => height - (rate - min) / range * height;
-
-        var figure = new PathFigure { StartPoint = new Point(XAt(0), YAt(points[0].Rate)) };
-        for (var i = 1; i < points.Count; i++)
-            figure.Segments.Add(new LineSegment(new Point(XAt(i), YAt(points[i].Rate)), true));
-
-        var rising = points[^1].Rate >= points[0].Rate;
-        var lineColor = rising ? TrendUpColor : TrendDownColor;
-        _calcChartLine.Data = new PathGeometry(new[] { figure });
-        _calcChartLine.Stroke = new SolidColorBrush(lineColor);
-
-        var fillFigure = figure.Clone();
-        fillFigure.Segments.Add(new LineSegment(new Point(width, height), true));
-        fillFigure.Segments.Add(new LineSegment(new Point(0, height), true));
-        fillFigure.IsClosed = true;
-        _calcChartFill.Data = new PathGeometry(new[] { fillFigure });
-        _calcChartFill.Fill = new LinearGradientBrush(
-            new GradientStopCollection
-            {
-                new GradientStop(Color.FromArgb(70, lineColor.R, lineColor.G, lineColor.B), 0),
-                new GradientStop(Color.FromArgb(0, lineColor.R, lineColor.G, lineColor.B), 1)
-            },
-            new Point(0, 0), new Point(0, 1));
-
-        var delta = points[^1].Rate - points[0].Rate;
-        var deltaPct = points[0].Rate == 0 ? 0 : delta / points[0].Rate * 100;
-        var arrow = delta >= 0 ? "▲" : "▼";
-        var periodLabel = _calcRangeIsYear ? "год" : "месяц";
-        _calcChangeText.Text = $"{arrow} {delta:+0.00;-0.00} ₽  {deltaPct:+0.0;-0.0}% за {periodLabel}";
-        _calcChangeText.Foreground = new SolidColorBrush(delta >= 0 ? TrendUpColor : TrendDownColor);
-    }
-
-    private Border BuildCalcRangeButton(string label, bool isYear)
-    {
-        var text = new TextBlock { Text = label, FontSize = 10, FontFamily = LabelFont, Foreground = Brushes.White, HorizontalAlignment = HorizontalAlignment.Center };
-        var button = new Border
-        {
-            CornerRadius = new CornerRadius(9),
-            Padding = new Thickness(8, 3, 8, 3),
-            Margin = new Thickness(0, 0, 5, 0),
-            Cursor = Cursors.Hand,
-            Child = text
-        };
-        button.MouseLeftButtonDown += (_, e) =>
-        {
-            e.Handled = true;
-            if (_calcRangeIsYear == isYear) return;
-            _calcRangeIsYear = isYear;
-            UpdateCalcRangeButtons();
-            _ = LoadCalcRangeAsync();
-        };
-        return button;
-    }
-
-    private void UpdateCalcRangeButtons()
-    {
-        var activeBg = new SolidColorBrush(Color.FromArgb(60, 255, 255, 255));
-        var inactiveBg = new SolidColorBrush(Color.FromArgb(20, 255, 255, 255));
-        _calcMonthButton.Background = !_calcRangeIsYear ? activeBg : inactiveBg;
-        _calcYearButton.Background = _calcRangeIsYear ? activeBg : inactiveBg;
-    }
-
     // Called whenever fresh daily history lands (see ApplyHistoryToViews) -
     // the calculator's own amount conversion only needs the LATEST day's
     // rates (not the whole history), same cache as everything else so it
     // doesn't trigger its own separate CBR request.
     private void UpdateCalculatorRate(CbrHistoryPoint latest)
     {
-        var firstLoad = _calcLatest == null;
         _calcLatest = latest;
         RecalculateCalculator();
-        if (firstLoad) _ = LoadCalcRangeAsync();
     }
 
     private void UpdateChartVisual(List<CbrHistoryPoint> points)
@@ -1344,7 +1450,7 @@ public sealed class IslandWindow : Window
         }
 
         foreach (var chip in _hoverChips) chip.Visibility = Visibility.Hidden;
-        _tooltipDate.Text = p.Date.ToString("dd MMMM", System.Globalization.CultureInfo.GetCultureInfo("ru-RU"));
+        _tooltipDate.Text = p.Date.ToString("d MMMM", System.Globalization.CultureInfo.GetCultureInfo("en-US"));
         _tooltipValues[0].Text = $"{p.UsdRub:0.0000}";
         _tooltipValues[1].Text = $"{p.EurRub:0.0000}";
         _tooltipValues[2].Text = $"{p.CnyRub:0.0000}";
@@ -1576,6 +1682,7 @@ public sealed class IslandWindow : Window
         }
 
         RefreshHistoryIfStale();
+        if (_currentTab == RangeTabIndex && _rangePoints is not { Count: >= 2 }) _ = LoadRangeAsync();
     }
 
     // Small glyphs shown on the collapsed pill for whichever tab was last
@@ -1602,12 +1709,14 @@ public sealed class IslandWindow : Window
         CurrencyTabIndex => BuildCollapsedRatesRow(),
         ChartTabIndex => BuildCollapsedRatesRow(),
         CalculatorTabIndex => BuildCollapsedRatesRow(),
+        RangeTabIndex => BuildCollapsedRatesRow(),
         _ => null
     };
 
     private static readonly Color UsdAccent = Color.FromRgb(0x5F, 0xD0, 0x68);
     private static readonly Color EurAccent = Color.FromRgb(0x5A, 0xC8, 0xFA);
     private static readonly Color CnyAccent = Color.FromRgb(0xFF, 0xD1, 0x66);
+    private static readonly Color AedAccent = Color.FromRgb(0xC3, 0x9B, 0xFF);
     private static readonly Color TrendUpColor = Color.FromRgb(0x30, 0xD1, 0x58);
     private static readonly Color TrendDownColor = Color.FromRgb(0xFF, 0x45, 0x3A);
 
@@ -2659,6 +2768,8 @@ public sealed class App : Application
         // points at wherever this build is actually running from - see
         // AppSettings.RepairAutostart for why that drifts.
         AppSettings.RepairAutostart();
+        SelfUpdater.CleanupLeftovers();
+        SelfUpdater.Log($"app start v{AppVersion.Current} path={Environment.ProcessPath}");
         CheckUrgentUpdateFlag();
 
         _window = new IslandWindow();
@@ -2673,14 +2784,14 @@ public sealed class App : Application
         };
 
         var menu = new Forms.ContextMenuStrip();
-        var toggleItem = menu.Items.Add("Показать/скрыть");
+        var toggleItem = menu.Items.Add("Show/hide");
         toggleItem.Click += (_, _) => _window?.ToggleForcedVisibility();
-        var settingsItem = menu.Items.Add("Настройки");
+        var settingsItem = menu.Items.Add("Settings");
         settingsItem.Click += (_, _) => OpenSettings();
-        var checkUpdatesItem = menu.Items.Add("Проверить обновления");
+        var checkUpdatesItem = menu.Items.Add("Check for updates");
         checkUpdatesItem.Click += (_, _) => CheckForUpdatesInBackground(manual: true);
         menu.Items.Add(new Forms.ToolStripSeparator());
-        var exitItem = menu.Items.Add("Выход");
+        var exitItem = menu.Items.Add("Exit");
         exitItem.Click += (_, _) => Shutdown();
 
         _trayIcon.ContextMenuStrip = menu;
@@ -2695,7 +2806,11 @@ public sealed class App : Application
         // the prompt window is still the only thing that ever surfaces an
         // available update, and it still only ever applies on a click.
         _updateCheckTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(15) };
-        _updateCheckTimer.Tick += (_, _) => CheckForUpdatesInBackground();
+        _updateCheckTimer.Tick += (_, _) =>
+        {
+            SelfUpdater.Log("periodic recheck tick");
+            CheckForUpdatesInBackground();
+        };
         _updateCheckTimer.Start();
     }
 
@@ -2708,7 +2823,7 @@ public sealed class App : Application
             if (!File.Exists(SelfUpdater.UrgentUpdateFlagPath)) return;
             File.Delete(SelfUpdater.UrgentUpdateFlagPath);
             _trayIcon?.ShowBalloonTip(8000, "Currency Island",
-                "Экстренное обновление установлено.", Forms.ToolTipIcon.Info);
+                "Emergency update installed.", Forms.ToolTipIcon.Info);
         }
         catch
         {
@@ -2720,32 +2835,32 @@ public sealed class App : Application
     {
         try
         {
+            SelfUpdater.Log($"check start manual={manual} current={AppVersion.Current}");
             var result = await UpdateChecker.CheckAsync();
+            SelfUpdater.Log($"check result latest={result.LatestVersion} available={result.UpdateAvailable} asset={result.AssetDownloadUrl is not null} urgent={result.IsUrgent}");
             if (!result.UpdateAvailable || result.AssetDownloadUrl is null)
             {
                 if (manual)
-                    _trayIcon?.ShowBalloonTip(5000, "Currency Island", "У вас последняя версия.", Forms.ToolTipIcon.Info);
+                    _trayIcon?.ShowBalloonTip(5000, "Currency Island", "You are up to date.", Forms.ToolTipIcon.Info);
                 return;
             }
 
-            if (!manual && result.LatestVersion == _updateNotifiedVersion) return;
+            if (!manual && result.LatestVersion == _updateNotifiedVersion)
+            {
+                SelfUpdater.Log($"prompt for {result.LatestVersion} already shown this session, skipping");
+                return;
+            }
             _updateNotifiedVersion = result.LatestVersion;
             _pendingUpdateAssetUrl = result.AssetDownloadUrl;
 
-            // Never applies on its own, period - not even for an IsUrgent
-            // release. The app vanishing and reappearing (self-update swaps
-            // the exe and restarts the process) with no warning read as
-            // broken/crashed, not as an update. IsUrgent still exists as a
-            // publisher-side marker, but all it does now is make the
-            // prompt itself more insistent (see ShowUpdatePrompt) - the
-            // actual update only ever starts from the user clicking
-            // "Update" in that window.
+            SelfUpdater.Log($"showing update prompt for {result.LatestVersion}");
             ShowUpdatePrompt(result.IsUrgent);
         }
-        catch
+        catch (Exception ex)
         {
+            SelfUpdater.Log($"check failed: {ex.Message}");
             if (manual)
-                _trayIcon?.ShowBalloonTip(5000, "Currency Island", "Не удалось проверить обновления.", Forms.ToolTipIcon.Warning);
+                _trayIcon?.ShowBalloonTip(5000, "Currency Island", "Could not check for updates.", Forms.ToolTipIcon.Warning);
         }
     }
 
@@ -2780,11 +2895,14 @@ public sealed class App : Application
 
         try
         {
+            SelfUpdater.Log("user accepted the update");
             await SelfUpdater.DownloadAndRestartAsync(assetUrl, urgent: urgent);
         }
-        catch
+        catch (Exception ex)
         {
-            // best-effort auto-update only
+            SelfUpdater.Log($"apply failed: {ex}");
+            _updatePromptWindow?.ShowFailure();
+            _trayIcon?.ShowBalloonTip(8000, "Currency Island", "Could not install the update. Download the latest version manually from the release page.", Forms.ToolTipIcon.Warning);
         }
         finally
         {

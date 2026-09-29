@@ -15,6 +15,7 @@ public sealed class CbrRatesSample
     public double UsdRub;
     public double EurRub;
     public double CnyRub;
+    public double AedRub;
     public DateTime Date;
 
     // Populated separately (see CbrRatesProvider.FetchWithPreviousAsync) -
@@ -33,6 +34,7 @@ public sealed class CbrHistoryPoint
     public double UsdRub;
     public double EurRub;
     public double CnyRub;
+    public double AedRub;
 }
 
 public sealed class CbrRatesProvider
@@ -109,26 +111,24 @@ public sealed class CbrRatesProvider
         Date = s.Date,
         UsdRub = s.UsdRub,
         EurRub = s.EurRub,
-        CnyRub = s.CnyRub
+        CnyRub = s.CnyRub,
+        AedRub = s.AedRub
     };
 
     // CBR's internal per-currency codes (NOT the CharCode - these are only
-    // used by the dynamic/range endpoint). Stable, undocumented but widely
-    // relied upon: USD=R01235, EUR=R01239, CNY=R01375.
+    // used by the dynamic/range endpoint): USD=R01235, EUR=R01239,
+    // CNY=R01375, AED=R01230.
     private static readonly Dictionary<string, string> DynamicValCodes = new()
     {
         ["USD"] = "R01235",
         ["EUR"] = "R01239",
-        ["CNY"] = "R01375"
+        ["CNY"] = "R01375",
+        ["AED"] = "R01230"
     };
 
-    // FetchHistoryAsync walks backward one day-request at a time, which is
-    // fine for a handful of days but would mean hundreds of requests for a
-    // month/year range. XML_dynamic.asp returns every published rate for
-    // ONE currency across an arbitrary date range in a single request -
-    // the right tool for "give me a year of USD", just not usable for the
-    // day-over-day 3-currency table this app's main view already has
-    // (it's one currency per call, not all three at once).
+    // XML_dynamic.asp returns every published rate for ONE currency across
+    // an arbitrary date range in a single request - the right tool for a
+    // month/year chart (FetchHistoryAsync would need hundreds of requests).
     public async Task<List<(DateTime Date, double Rate)>> FetchDynamicRangeAsync(string charCode, DateTime from, DateTime to)
     {
         var points = new List<(DateTime, double)>();
@@ -183,6 +183,7 @@ public sealed class CbrRatesProvider
                 UsdRub = ReadRate(doc, "USD"),
                 EurRub = ReadRate(doc, "EUR"),
                 CnyRub = ReadRate(doc, "CNY"),
+                AedRub = ReadRate(doc, "AED"),
                 Date = date2
             };
         }
