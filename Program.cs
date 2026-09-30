@@ -81,6 +81,11 @@ public sealed class IslandWindow : Window
     private readonly string _stateFile;
     private PositionState _pos = new();
     private Border _settingsButton = null!;
+    private Border _pinButton = null!;
+    private ShapePath _pinIcon = null!;
+    private bool _pinned;
+    private int _startTab;
+    private bool _tabPersistenceReady;
     private int _currentTab;
     private bool _tabAnimating;
     private bool _forcedHidden;
@@ -103,7 +108,10 @@ public sealed class IslandWindow : Window
         Directory.CreateDirectory(folder);
         _stateFile = Path.Combine(folder, "position.json");
         LoadPosition();
-        _chartCrosshairHover = AppSettings.Load().ChartCrosshairHover;
+        var startupSettings = AppSettings.Load();
+        _chartCrosshairHover = startupSettings.ChartCrosshairHover;
+        _pinned = startupSettings.Pinned;
+        _startTab = Math.Clamp(startupSettings.StartTab < 0 ? startupSettings.LastTab : startupSettings.StartTab, 0, TabCount - 1);
 
         WindowStyle = WindowStyle.None;
         AllowsTransparency = true;
@@ -355,6 +363,38 @@ public sealed class IslandWindow : Window
         settingsButton.MouseEnter += (_, _) => settingsButton.Background = new SolidColorBrush(Color.FromArgb(75, 255, 255, 255));
         settingsButton.MouseLeave += (_, _) => settingsButton.Background = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));
         _settingsButton = settingsButton;
+
+        _pinIcon = new ShapePath
+        {
+            Data = Geometry.Parse("M16,9V4h1c0.55,0,1-0.45,1-1c0-0.55-0.45-1-1-1H7C6.45,2,6,2.45,6,3c0,0.55,0.45,1,1,1h1v5c0,1.66-1.34,3-3,3v2h5.97v7l1,1l1-1v-7H19v-2C17.34,12,16,10.66,16,9z"),
+            Stretch = Stretch.Uniform,
+            Width = 12, Height = 12,
+            RenderTransformOrigin = new Point(0.5, 0.5),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        _pinButton = new Border
+        {
+            Width = 22,
+            Height = 22,
+            CornerRadius = new CornerRadius(11),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 8, 5, 0),
+            Opacity = 0,
+            Visibility = Visibility.Hidden,
+            Cursor = Cursors.Hand,
+            Child = _pinIcon
+        };
+        UpdatePinVisual();
+        _pinButton.MouseEnter += (_, _) => UpdatePinVisual(hover: true);
+        _pinButton.MouseLeave += (_, _) => UpdatePinVisual();
+        _pinButton.PreviewMouseDown += (_, e) => e.Handled = true;
+        _pinButton.MouseLeftButtonUp += (_, e) =>
+        {
+            e.Handled = true;
+            SetPinned(!_pinned);
+        };
         settingsButton.MouseLeftButtonDown += (_, e) =>
         {
             e.Handled = true; // stop this bubbling to _shell's own MouseLeftButtonDown, which starts a drag
@@ -376,9 +416,11 @@ public sealed class IslandWindow : Window
         shellRoot.Children.Add(_collapsedIcon);
         shellRoot.Children.Add(root);
         shellRoot.Children.Add(settingsButton);
+        shellRoot.Children.Add(_pinButton);
 
         _shell.Child = shellRoot;
-        SetTab(0);
+        SetTab(_startTab);
+        _tabPersistenceReady = true;
     }
 
     private static readonly FontFamily LabelFont = new("Segoe UI Semibold");
@@ -903,15 +945,43 @@ public sealed class IslandWindow : Window
         var resultRow = new Grid();
         resultRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         resultRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        resultRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         _calcResultText = new TextBlock
         {
             FontSize = 17, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
             Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis
         };
         Grid.SetColumn(_calcResultText, 0);
+        _calcResultText.Cursor = Cursors.Hand;
+        _calcResultText.PreviewMouseDown += (_, e) => e.Handled = true;
+        _calcResultText.MouseLeftButtonUp += (_, e) => { e.Handled = true; CopyCalcResult(); };
         resultRow.Children.Add(_calcResultText);
+
+        _calcCopyIcon = new ShapePath
+        {
+            Data = Geometry.Parse(CopyIconData),
+            Fill = new SolidColorBrush(Color.FromArgb(150, 235, 235, 240)),
+            Stretch = Stretch.Uniform,
+            Width = 12, Height = 12,
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
+        };
+        var copyButton = new Border
+        {
+            Width = 24, Height = 24, CornerRadius = new CornerRadius(8),
+            Background = Brushes.Transparent,
+            Cursor = Cursors.Hand,
+            Margin = new Thickness(0, 0, 4, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = _calcCopyIcon
+        };
+        copyButton.MouseEnter += (_, _) => copyButton.Background = new SolidColorBrush(Color.FromArgb(30, 255, 255, 255));
+        copyButton.MouseLeave += (_, _) => copyButton.Background = Brushes.Transparent;
+        copyButton.PreviewMouseDown += (_, e) => e.Handled = true;
+        copyButton.MouseLeftButtonUp += (_, e) => { e.Handled = true; CopyCalcResult(); };
+        Grid.SetColumn(copyButton, 1);
+        resultRow.Children.Add(copyButton);
         var toChip = BuildCurrencyChip(AllCurrencies, _calcToCurrency, c => { _calcToCurrency = c; RecalculateCalculator(); }, out _calcToRefresh);
-        Grid.SetColumn(toChip, 1);
+        Grid.SetColumn(toChip, 2);
         resultRow.Children.Add(toChip);
         resultField.Child = resultRow;
         cardContent.Children.Add(resultField);
@@ -1375,6 +1445,47 @@ public sealed class IslandWindow : Window
         RecalculateCalculator();
     }
 
+    private static readonly NumberFormatInfo CalcNumberFormat = new()
+    {
+        NumberGroupSeparator = " ",
+        NumberDecimalSeparator = ",",
+        NumberGroupSizes = new[] { 3 }
+    };
+
+    private static string FormatCalcNumber(double value) =>
+        value.ToString(value >= 1000 ? "#,##0.00" : "0.####", CalcNumberFormat);
+
+    private const string CopyIconData = "M16,1H4C2.9,1,2,1.9,2,3v14h2V3h12V1z M19,5H8C6.9,5,6,5.9,6,7v14c0,1.1,0.9,2,2,2h11c1.1,0,2-0.9,2-2V7C21,5.9,20.1,5,19,5z M19,21H8V7h11V21z";
+    private const string CheckIconData = "M9,16.17L4.83,12l-1.42,1.41L9,19L21,7l-1.41-1.41z";
+    private ShapePath _calcCopyIcon = null!;
+    private DispatcherTimer? _calcCopyResetTimer;
+
+    private void CopyCalcResult()
+    {
+        var text = _calcResultText.Text;
+        if (string.IsNullOrEmpty(text)) return;
+        try
+        {
+            Clipboard.SetText(text);
+        }
+        catch
+        {
+            return;
+        }
+
+        _calcCopyIcon.Data = Geometry.Parse(CheckIconData);
+        _calcCopyIcon.Fill = new SolidColorBrush(Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent);
+        _calcCopyResetTimer?.Stop();
+        _calcCopyResetTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1100) };
+        _calcCopyResetTimer.Tick += (_, _) =>
+        {
+            _calcCopyResetTimer!.Stop();
+            _calcCopyIcon.Data = Geometry.Parse(CopyIconData);
+            _calcCopyIcon.Fill = new SolidColorBrush(Color.FromArgb(150, 235, 235, 240));
+        };
+        _calcCopyResetTimer.Start();
+    }
+
     private double RateToRub(int currency) => currency switch
     {
         0 => _calcLatest?.UsdRub ?? 0,
@@ -1391,12 +1502,12 @@ public sealed class IslandWindow : Window
         var fromRate = RateToRub(_calcFromCurrency);
         var toRate = RateToRub(_calcToCurrency);
         var result = toRate == 0 ? 0 : amount * fromRate / toRate;
-        _calcResultText.Text = result.ToString(result >= 1000 ? "#,##0.00" : "0.####", CultureInfo.InvariantCulture);
+        _calcResultText.Text = FormatCalcNumber(result);
 
         if (fromRate > 0 && toRate > 0)
         {
             var oneUnit = fromRate / toRate;
-            _calcRateText.Text = $"1 {CalcCodes[_calcFromCurrency]} = {oneUnit.ToString("0.####", CultureInfo.InvariantCulture)} {CalcCodes[_calcToCurrency]}";
+            _calcRateText.Text = $"1 {CalcCodes[_calcFromCurrency]} = {FormatCalcNumber(oneUnit)} {CalcCodes[_calcToCurrency]}";
         }
     }
 
@@ -1718,6 +1829,12 @@ public sealed class IslandWindow : Window
             _dots[i].Fill = i == _currentTab
                 ? Brushes.White
                 : new SolidColorBrush(Color.FromArgb(90, 255, 255, 255));
+        }
+
+        if (_tabPersistenceReady)
+        {
+            var tab = _currentTab;
+            AppSettings.Update(d => d.LastTab = tab);
         }
 
         RefreshHistoryIfStale();
@@ -2079,7 +2196,7 @@ public sealed class IslandWindow : Window
             // instant instead fixed that but looked like a harsh snap/jump-
             // cut - still animated, just shorter, so it reads as a quick
             // shrink instead of either a stutter or a cut.
-            CollapseFast();
+            if (!_pinned) CollapseFast();
         }
 
         _positionUpdateInProgress = true;
@@ -2112,6 +2229,7 @@ public sealed class IslandWindow : Window
             var withinAnyRadius = false;
             foreach (var (point, radius, h, v) in GetSnapPoints())
             {
+                if (_pinned) break;
                 if (h != _dragBaseH || v != _dragBaseV) continue;
                 var effectiveRadius = _snapped ? radius * 1.2 : radius;
                 if (Math.Abs(rawLeft - point.X) < effectiveRadius && Math.Abs(rawTop - point.Y) < effectiveRadius)
@@ -2186,6 +2304,16 @@ public sealed class IslandWindow : Window
         if (!_dragging) return;
         _dragging = false;
 
+        if (_pinned)
+        {
+            _pos.Left = Left;
+            _pos.Top = Top;
+            _pos.AnchorH = HorizontalContentAlignment.ToString();
+            _pos.AnchorV = VerticalContentAlignment.ToString();
+            SavePosition();
+            return;
+        }
+
         // Snapping only happens here, once, at release - not on every move
         // event during the drag. Alignment never changes mid-drag, so if this
         // drag started at a DIFFERENT corner (e.g. dragged in from bottom-
@@ -2254,6 +2382,30 @@ public sealed class IslandWindow : Window
         };
     }
 
+    private void UpdatePinVisual(bool hover = false)
+    {
+        var accent = Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent;
+        _pinIcon.Fill = _pinned ? new SolidColorBrush(accent) : new SolidColorBrush(Color.FromArgb(190, 255, 255, 255));
+        _pinIcon.RenderTransform = new RotateTransform(_pinned ? 0 : 45);
+        _pinButton.Background = _pinned
+            ? new SolidColorBrush(Color.FromArgb((byte)(hover ? 90 : 60), accent.R, accent.G, accent.B))
+            : new SolidColorBrush(Color.FromArgb((byte)(hover ? 75 : 40), 255, 255, 255));
+    }
+
+    private void SetPinned(bool pinned)
+    {
+        _pinned = pinned;
+        UpdatePinVisual(hover: true);
+        AppSettings.Update(d => d.Pinned = pinned);
+        if (pinned) Expand();
+        else if (!IsCursorOverHoverZone()) Collapse();
+    }
+
+    public void RestorePinned()
+    {
+        if (_pinned) Dispatcher.BeginInvoke(new Action(Expand), DispatcherPriority.Loaded);
+    }
+
     public void ToggleForcedVisibility()
     {
         _forcedHidden = !_forcedHidden;
@@ -2281,6 +2433,7 @@ public sealed class IslandWindow : Window
         // actually changes the position (see OnShellMouseUp).
         _content.Visibility = Visibility.Visible;
         _settingsButton.Visibility = Visibility.Visible;
+        _pinButton.Visibility = Visibility.Visible;
 
         // The real window only ever needs to be as tall as whichever tab
         // needs the most room (ExpandedHeight) while the pill is expanded
@@ -2591,7 +2744,7 @@ public sealed class IslandWindow : Window
 
     private void Collapse()
     {
-        if (!_isExpanded) return;
+        if (!_isExpanded || _pinned) return;
         _isExpanded = false;
         CloseDropdown();
         _collapsedIcon.Content = BuildCollapsedIcon(_currentTab);
@@ -2605,7 +2758,7 @@ public sealed class IslandWindow : Window
         // otherwise fully static frame, which is exactly what made it
         // read as a stray blink instead of part of the same motion.
         AnimateContentOpacity(0, onCompleted: () => _content.Visibility = Visibility.Hidden, AnimDuration);
-        AnimateSettingsButtonOpacity(0, onCompleted: () => _settingsButton.Visibility = Visibility.Hidden, AnimDuration);
+        AnimateSettingsButtonOpacity(0, onCompleted: HideCornerButtons, AnimDuration);
         AnimateCollapsedIconOpacity(1, AnimDuration);
     }
 
@@ -2620,13 +2773,13 @@ public sealed class IslandWindow : Window
 
     private void CollapseFast()
     {
-        if (!_isExpanded) return;
+        if (!_isExpanded || _pinned) return;
         _isExpanded = false;
         CloseDropdown();
         _collapsedIcon.Content = BuildCollapsedIcon(_currentTab);
         CollapseShellAndWindow(FastAnimDuration);
         AnimateContentOpacity(0, onCompleted: () => _content.Visibility = Visibility.Hidden, FastAnimDuration);
-        AnimateSettingsButtonOpacity(0, onCompleted: () => _settingsButton.Visibility = Visibility.Hidden, FastAnimDuration);
+        AnimateSettingsButtonOpacity(0, onCompleted: HideCornerButtons, FastAnimDuration);
         AnimateCollapsedIconOpacity(1, FastAnimDuration);
     }
 
@@ -2680,11 +2833,19 @@ public sealed class IslandWindow : Window
     // its corner margin isn't at the mercy of _content's own asymmetric
     // padding - which means it also needs its own explicit show/hide fade in
     // Expand()/Collapse()/CollapseFast() instead of inheriting _content's.
+    private void HideCornerButtons()
+    {
+        _settingsButton.Visibility = Visibility.Hidden;
+        _pinButton.Visibility = Visibility.Hidden;
+    }
+
     private void AnimateSettingsButtonOpacity(double target, Action? onCompleted = null, TimeSpan? duration = null)
     {
-        var anim = new DoubleAnimation(_settingsButton.Opacity, target, duration ?? TimeSpan.FromMilliseconds(150));
+        var length = duration ?? TimeSpan.FromMilliseconds(150);
+        var anim = new DoubleAnimation(_settingsButton.Opacity, target, length);
         if (onCompleted != null) anim.Completed += (_, _) => onCompleted();
         _settingsButton.BeginAnimation(OpacityProperty, anim);
+        _pinButton.BeginAnimation(OpacityProperty, new DoubleAnimation(_pinButton.Opacity, target, length));
     }
 
     private void AnimateOpacity(double target, Action? onDone)
@@ -2825,6 +2986,7 @@ public sealed class App : Application
         _window = new IslandWindow();
         _window.SettingsRequested = OpenSettings;
         _window.Show();
+        _window.RestorePinned();
 
         _trayIcon = new Forms.NotifyIcon
         {

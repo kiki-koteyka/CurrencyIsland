@@ -12,6 +12,9 @@ public sealed class SettingsData
     // colored value chips sitting right on each line, no box at all.
     // Defaults true - the crosshair reads as the more polished of the two.
     public bool ChartCrosshairHover { get; set; } = true;
+    public bool Pinned { get; set; }
+    public int StartTab { get; set; }
+    public int LastTab { get; set; }
 }
 
 public static class AppSettings
@@ -38,6 +41,13 @@ public static class AppSettings
         }
 
         return new SettingsData();
+    }
+
+    public static void Update(Action<SettingsData> change)
+    {
+        var data = Load();
+        change(data);
+        Save(data);
     }
 
     public static void Save(SettingsData data)

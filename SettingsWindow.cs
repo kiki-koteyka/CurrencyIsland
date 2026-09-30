@@ -82,6 +82,7 @@ public sealed class SettingsWindow : FluentWindow
         });
         _pageGeneral.Children.Add(BuildAutostartCard());
         _pageGeneral.Children.Add(BuildChartHoverStyleCard());
+        _pageGeneral.Children.Add(BuildStartTabCard());
         _pageGeneral.Children.Add(BuildResetPositionCard());
         contentPanel.Children.Add(_pageGeneral);
 
@@ -173,14 +174,12 @@ public sealed class SettingsWindow : FluentWindow
         var toggle = new ToggleSwitch { IsChecked = _data.ChartCrosshairHover };
         toggle.Checked += (_, _) =>
         {
-            _data.ChartCrosshairHover = true;
-            AppSettings.Save(_data);
+            AppSettings.Update(d => d.ChartCrosshairHover = true);
             _island.SetChartHoverStyle(true);
         };
         toggle.Unchecked += (_, _) =>
         {
-            _data.ChartCrosshairHover = false;
-            AppSettings.Save(_data);
+            AppSettings.Update(d => d.ChartCrosshairHover = false);
             _island.SetChartHoverStyle(false);
         };
 
@@ -190,6 +189,27 @@ public sealed class SettingsWindow : FluentWindow
             Icon = new SymbolIcon { Symbol = SymbolRegular.CursorHover24 },
             Header = new TextBlock { Text = "Crosshair chart hover", FontSize = 14, VerticalAlignment = VerticalAlignment.Center },
             Content = toggle
+        };
+    }
+
+    private CardControl BuildStartTabCard()
+    {
+        var combo = new System.Windows.Controls.ComboBox { MinWidth = 130, VerticalAlignment = VerticalAlignment.Center };
+        foreach (var name in new[] { "Last used", "Rates", "Chart", "Calculator", "Range" })
+            combo.Items.Add(name);
+        combo.SelectedIndex = Math.Clamp(_data.StartTab + 1, 0, 4);
+        combo.SelectionChanged += (_, _) =>
+        {
+            var index = combo.SelectedIndex;
+            if (index >= 0) AppSettings.Update(d => d.StartTab = index - 1);
+        };
+
+        return new CardControl
+        {
+            Margin = new Thickness(0, 0, 0, 8),
+            Icon = new SymbolIcon { Symbol = SymbolRegular.Star24 },
+            Header = new TextBlock { Text = "Start tab", FontSize = 14, VerticalAlignment = VerticalAlignment.Center },
+            Content = combo
         };
     }
 
