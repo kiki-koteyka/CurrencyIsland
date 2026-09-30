@@ -368,19 +368,19 @@ public sealed class IslandWindow : Window
         {
             Data = Geometry.Parse("M16,9V4h1c0.55,0,1-0.45,1-1c0-0.55-0.45-1-1-1H7C6.45,2,6,2.45,6,3c0,0.55,0.45,1,1,1h1v5c0,1.66-1.34,3-3,3v2h5.97v7l1,1l1-1v-7H19v-2C17.34,12,16,10.66,16,9z"),
             Stretch = Stretch.Uniform,
-            Width = 12, Height = 12,
+            Width = 14, Height = 14,
             RenderTransformOrigin = new Point(0.5, 0.5),
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
         };
         _pinButton = new Border
         {
-            Width = 22,
-            Height = 22,
-            CornerRadius = new CornerRadius(11),
+            Width = 26,
+            Height = 26,
+            CornerRadius = new CornerRadius(13),
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Top,
-            Margin = new Thickness(0, 8, 5, 0),
+            Margin = new Thickness(0, 14, 14, 0),
             Opacity = 0,
             Visibility = Visibility.Hidden,
             Cursor = Cursors.Hand,
@@ -438,7 +438,7 @@ public sealed class IslandWindow : Window
         // (also short) table-tab window put the CNY row's rightmost value
         // right under it. Hugging the top instead keeps the whole table
         // clear of that reserved corner. See TabExpandedHeight.
-        var grid = new Grid { VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 4, 0, 0) };
+        var grid = new Grid { VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 4, 16, 0) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         for (var i = 0; i < TableDays; i++) grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(72) });
         for (var i = 0; i < 4; i++) grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
