@@ -1550,19 +1550,21 @@ public sealed class IslandWindow : Window
         // value labels would land on top of each other. Spread any that are
         // within a label's height of each other, ordered by their natural Y,
         // instead of leaving them to overlap into unreadable mush.
-        const double minGap = 13;
+        const double minGap = 14;
+        const double maxTop = ChartHeight - 14;
         var order = new[] { 0, 1, 2 };
         Array.Sort(order, (a, b) => endY[a].CompareTo(endY[b]));
+        var tops = new double[SeriesCount];
+        for (var s = 0; s < SeriesCount; s++) tops[s] = Math.Clamp(endY[s] - 7, 0, maxTop);
         for (var i = 1; i < order.Length; i++)
-        {
-            var prev = order[i - 1];
-            var cur = order[i];
-            if (endY[cur] - endY[prev] < minGap) endY[cur] = endY[prev] + minGap;
-        }
+            tops[order[i]] = Math.Max(tops[order[i]], tops[order[i - 1]] + minGap);
+        tops[order[^1]] = Math.Min(tops[order[^1]], maxTop);
+        for (var i = order.Length - 2; i >= 0; i--)
+            tops[order[i]] = Math.Min(tops[order[i]], tops[order[i + 1]] - minGap);
         for (var s = 0; s < SeriesCount; s++)
         {
             Canvas.SetLeft(_seriesValueLabel[s], ChartPlotWidth + 7);
-            Canvas.SetTop(_seriesValueLabel[s], Math.Clamp(endY[s] - 7, 0, ChartHeight - 12));
+            Canvas.SetTop(_seriesValueLabel[s], tops[s]);
         }
 
         var n = points.Count;
