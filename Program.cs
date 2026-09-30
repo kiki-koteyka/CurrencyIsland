@@ -83,6 +83,21 @@ public sealed class IslandWindow : Window
     private Border _settingsButton = null!;
     private Border _pinButton = null!;
     private ShapePath _pinIcon = null!;
+    private readonly ScaleTransform _pinScale = new(1, 1);
+    private readonly RotateTransform _pinRotate = new(45);
+    private bool _pinHover;
+    private readonly SolidColorBrush _pinBgBrush = new();
+    private readonly SolidColorBrush _pinIconBrush = new();
+
+    public static readonly DependencyProperty PinMorphProperty = DependencyProperty.Register(
+        nameof(PinMorph), typeof(double), typeof(IslandWindow),
+        new PropertyMetadata(0.0, (d, _) => ((IslandWindow)d).ApplyPinMorph()));
+
+    public double PinMorph
+    {
+        get => (double)GetValue(PinMorphProperty);
+        set => SetValue(PinMorphProperty, value);
+    }
     private bool _pinned;
     private int _startTab;
     private bool _tabPersistenceReady;
@@ -386,9 +401,13 @@ public sealed class IslandWindow : Window
             Cursor = Cursors.Hand,
             Child = _pinIcon
         };
-        UpdatePinVisual();
-        _pinButton.MouseEnter += (_, _) => UpdatePinVisual(hover: true);
-        _pinButton.MouseLeave += (_, _) => UpdatePinVisual();
+        _pinIcon.RenderTransform = _pinRotate;
+        _pinButton.RenderTransformOrigin = new Point(0.5, 0.5);
+        _pinButton.RenderTransform = _pinScale;
+        PinMorph = _pinned ? 1 : 0;
+        ApplyPinMorph();
+        _pinButton.MouseEnter += (_, _) => { _pinHover = true; ApplyPinMorph(); };
+        _pinButton.MouseLeave += (_, _) => { _pinHover = false; ApplyPinMorph(); };
         _pinButton.PreviewMouseDown += (_, e) => e.Handled = true;
         _pinButton.MouseLeftButtonUp += (_, e) =>
         {
@@ -911,6 +930,7 @@ public sealed class IslandWindow : Window
         Grid.SetColumn(fromChip, 1);
         amountRow.Children.Add(fromChip);
         amountField.Child = amountRow;
+        _calcAmountField = amountField;
         cardContent.Children.Add(amountField);
 
         var swapButton = new Border
@@ -932,7 +952,7 @@ public sealed class IslandWindow : Window
                 HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
             }
         };
-        swapButton.MouseLeftButtonDown += (_, e) => { e.Handled = true; SwapCalcCurrencies(); };
+        swapButton.MouseLeftButtonDown += (_, e) => { e.Handled = true; _ = FlipSwapAsync(swapButton); };
         cardContent.Children.Add(swapButton);
 
         var resultField = new Border
@@ -946,6 +966,18 @@ public sealed class IslandWindow : Window
         resultRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         resultRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         resultRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        _calcWipe = new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(70, Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent.R, Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent.G, Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent.B)),
+            CornerRadius = new CornerRadius(9),
+            Margin = new Thickness(-8, -5, -6, -5),
+            Opacity = 0,
+            IsHitTestVisible = false,
+            RenderTransformOrigin = new Point(0, 0.5),
+            RenderTransform = _calcWipeScale
+        };
+        Grid.SetColumnSpan(_calcWipe, 3);
+        resultRow.Children.Add(_calcWipe);
         _calcResultText = new TextBlock
         {
             FontSize = 17, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
@@ -963,8 +995,28 @@ public sealed class IslandWindow : Window
             Fill = new SolidColorBrush(Color.FromArgb(150, 235, 235, 240)),
             Stretch = Stretch.Uniform,
             Width = 12, Height = 12,
+            RenderTransformOrigin = new Point(0.5, 0.5),
+            RenderTransform = _calcCopyScale,
             HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
         };
+        _calcCheckIcon = new ShapePath
+        {
+            Data = Geometry.Parse("M2.6,7.3 L5.8,10.5 L11.4,3.8"),
+            Stroke = new SolidColorBrush(Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent),
+            StrokeThickness = 1.6,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            StrokeLineJoin = PenLineJoin.Round,
+            StrokeDashArray = new DoubleCollection { CheckDash, 20 },
+            StrokeDashOffset = CheckDash,
+            Width = 14, Height = 14,
+            Opacity = 0,
+            IsHitTestVisible = false,
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
+        };
+        var copyGlyphs = new Grid();
+        copyGlyphs.Children.Add(_calcCopyIcon);
+        copyGlyphs.Children.Add(_calcCheckIcon);
         var copyButton = new Border
         {
             Width = 24, Height = 24, CornerRadius = new CornerRadius(8),
@@ -972,7 +1024,7 @@ public sealed class IslandWindow : Window
             Cursor = Cursors.Hand,
             Margin = new Thickness(0, 0, 4, 0),
             VerticalAlignment = VerticalAlignment.Center,
-            Child = _calcCopyIcon
+            Child = copyGlyphs
         };
         copyButton.MouseEnter += (_, _) => copyButton.Background = new SolidColorBrush(Color.FromArgb(30, 255, 255, 255));
         copyButton.MouseLeave += (_, _) => copyButton.Background = Brushes.Transparent;
@@ -984,6 +1036,7 @@ public sealed class IslandWindow : Window
         Grid.SetColumn(toChip, 2);
         resultRow.Children.Add(toChip);
         resultField.Child = resultRow;
+        _calcResultField = resultField;
         cardContent.Children.Add(resultField);
 
         _calcRateText = new TextBlock
@@ -1320,8 +1373,11 @@ public sealed class IslandWindow : Window
     {
         var symbolHost = new ContentControl { VerticalAlignment = VerticalAlignment.Center, IsTabStop = false };
         var codeText = new TextBlock { FontSize = 12, FontFamily = LabelFont, Foreground = Brushes.White, Margin = new Thickness(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center };
+        var chevronRotate = new RotateTransform(0);
         var chevron = new ShapePath
         {
+            RenderTransformOrigin = new Point(0.5, 0.5),
+            RenderTransform = chevronRotate,
             Data = Geometry.Parse("M0,0 L4,4 L8,0"),
             Stroke = new SolidColorBrush(Color.FromArgb(160, 235, 235, 240)),
             StrokeThickness = 1.3, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round,
@@ -1370,6 +1426,22 @@ public sealed class IslandWindow : Window
             Child = popupBorder
         };
 
+        var items = new List<Border>();
+        var closing = false;
+        void CloseAnimated()
+        {
+            if (!popup.IsOpen || closing) return;
+            closing = true;
+            chevronRotate.BeginAnimation(RotateTransform.AngleProperty, Motion.Spring(chevronRotate.Angle, 0, Motion.Snappy));
+            var shrink = Motion.Tween(1, 0, 170, new CubicEase { EasingMode = EasingMode.EaseIn });
+            shrink.Completed += (_, _) =>
+            {
+                popup.IsOpen = false;
+                closing = false;
+            };
+            popupBorder.BeginAnimation(Reveal.FractionProperty, shrink);
+        }
+
         foreach (var idx in options)
         {
             var itemRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(10, 6, 12, 6) };
@@ -1386,7 +1458,8 @@ public sealed class IslandWindow : Window
                 Margin = new Thickness(6, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center
             });
-            var item = new Border { Background = Brushes.Transparent, Cursor = Cursors.Hand, Child = itemRow };
+            var item = new Border { Background = Brushes.Transparent, Cursor = Cursors.Hand, Child = itemRow, RenderTransform = new TranslateTransform() };
+            items.Add(item);
             item.MouseEnter += (_, _) => item.Background = new SolidColorBrush(Color.FromArgb(28, 255, 255, 255));
             item.MouseLeave += (_, _) => item.Background = Brushes.Transparent;
             item.MouseLeftButtonUp += (_, e) =>
@@ -1394,7 +1467,7 @@ public sealed class IslandWindow : Window
                 e.Handled = true;
                 refreshLocal(idx);
                 onPick(idx);
-                popup.IsOpen = false;
+                CloseAnimated();
             };
             list.Children.Add(item);
         }
@@ -1407,21 +1480,42 @@ public sealed class IslandWindow : Window
             outsideClickHandler = (_, e2) =>
             {
                 if (e2.OriginalSource is DependencyObject src && (IsDescendantOf(src, chip) || IsDescendantOf(src, popupBorder))) return;
-                popup.IsOpen = false;
+                CloseAnimated();
             };
             PreviewMouseDown += outsideClickHandler;
+            popupBorder.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            popupBorder.BeginAnimation(Reveal.FractionProperty, null);
+            Reveal.SetFraction(popupBorder, 0);
+            popupBorder.BeginAnimation(Reveal.FractionProperty, Motion.Spring(0, 1, Motion.Soft));
+            chevronRotate.BeginAnimation(RotateTransform.AngleProperty, Motion.Spring(chevronRotate.Angle, 180, Motion.Bouncy));
+            for (var i = 0; i < items.Count; i++)
+            {
+                var translate = (TranslateTransform)items[i].RenderTransform;
+                items[i].BeginAnimation(OpacityProperty, null);
+                translate.BeginAnimation(TranslateTransform.YProperty, null);
+                items[i].Opacity = 0;
+                translate.Y = -8;
+                items[i].BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 280, delayMs: 40 + i * 32));
+                translate.BeginAnimation(TranslateTransform.YProperty, Motion.Tween(-8, 0, 280, delayMs: 40 + i * 32));
+            }
         };
         popup.Closed += (_, _) =>
         {
             if (ReferenceEquals(_openDropdown, popup)) { _openDropdown = null; _openDropdownBorder = null; }
             if (outsideClickHandler != null) { PreviewMouseDown -= outsideClickHandler; outsideClickHandler = null; }
+            chevronRotate.BeginAnimation(RotateTransform.AngleProperty, null);
+            chevronRotate.Angle = 0;
+            popupBorder.BeginAnimation(Reveal.FractionProperty, null);
+            Reveal.SetFraction(popupBorder, 1);
+            closing = false;
         };
 
         chip.PreviewMouseDown += (_, e) => e.Handled = true;
         chip.MouseLeftButtonUp += (_, e) =>
         {
             e.Handled = true;
-            popup.IsOpen = !popup.IsOpen;
+            if (popup.IsOpen) CloseAnimated();
+            else popup.IsOpen = true;
         };
 
         return chip;
@@ -1435,6 +1529,54 @@ public sealed class IslandWindow : Window
             child = LogicalTreeHelper.GetParent(child) ?? (child is Visual ? VisualTreeHelper.GetParent(child) : null);
         }
         return false;
+    }
+
+    private Border _calcAmountField = null!;
+    private Border _calcResultField = null!;
+    private bool _swapBusy;
+
+    private async Task FlipSwapAsync(Border swapButton)
+    {
+        if (_swapBusy) return;
+        _swapBusy = true;
+
+        var squash = new ScaleTransform(1, 1);
+        swapButton.RenderTransformOrigin = new Point(0.5, 0.5);
+        swapButton.RenderTransform = squash;
+        var squashAnim = new DoubleAnimationUsingKeyFrames { Duration = TimeSpan.FromMilliseconds(380) };
+        squashAnim.KeyFrames.Add(new EasingDoubleKeyFrame(0.78, KeyTime.FromPercent(0.3)));
+        squashAnim.KeyFrames.Add(new EasingDoubleKeyFrame(1, KeyTime.FromPercent(1), Motion.Ease(Motion.Snappy)));
+        squash.BeginAnimation(ScaleTransform.ScaleXProperty, squashAnim);
+        squash.BeginAnimation(ScaleTransform.ScaleYProperty, squashAnim);
+
+        var fields = new[] { _calcAmountField, _calcResultField };
+        var flips = new ScaleTransform[fields.Length];
+        for (var i = 0; i < fields.Length; i++)
+        {
+            flips[i] = new ScaleTransform(1, 1);
+            fields[i].RenderTransformOrigin = new Point(0.5, 0.5);
+            fields[i].RenderTransform = flips[i];
+            flips[i].BeginAnimation(ScaleTransform.ScaleYProperty,
+                Motion.Tween(1, 0, 170, new QuadraticEase { EasingMode = EasingMode.EaseIn }, delayMs: i * 60));
+        }
+
+        await Task.Delay(250);
+        SwapCalcCurrencies();
+
+        for (var i = 0; i < fields.Length; i++)
+        {
+            flips[i].BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            flips[i].ScaleY = 0;
+            flips[i].BeginAnimation(ScaleTransform.ScaleYProperty,
+                Motion.Tween(0, 1, 300, Motion.Ease(Motion.Snappy), delayMs: i * 60));
+        }
+
+        await Task.Delay(300 + 60 + 40);
+        foreach (var field in fields)
+        {
+            field.RenderTransform = Transform.Identity;
+        }
+        _swapBusy = false;
     }
 
     private void SwapCalcCurrencies()
@@ -1456,9 +1598,14 @@ public sealed class IslandWindow : Window
         value.ToString(value >= 1000 ? "#,##0.00" : "0.####", CalcNumberFormat);
 
     private const string CopyIconData = "M16,1H4C2.9,1,2,1.9,2,3v14h2V3h12V1z M19,5H8C6.9,5,6,5.9,6,7v14c0,1.1,0.9,2,2,2h11c1.1,0,2-0.9,2-2V7C21,5.9,20.1,5,19,5z M19,21H8V7h11V21z";
-    private const string CheckIconData = "M9,16.17L4.83,12l-1.42,1.41L9,19L21,7l-1.41-1.41z";
     private ShapePath _calcCopyIcon = null!;
+    private ShapePath _calcCheckIcon = null!;
+    private readonly ScaleTransform _calcCopyScale = new(1, 1);
+    private Border _calcWipe = null!;
+    private readonly ScaleTransform _calcWipeScale = new(0, 1);
     private DispatcherTimer? _calcCopyResetTimer;
+    private bool _calcCopyBusy;
+    private const double CheckDash = 8.4;
 
     private void CopyCalcResult()
     {
@@ -1473,15 +1620,38 @@ public sealed class IslandWindow : Window
             return;
         }
 
-        _calcCopyIcon.Data = Geometry.Parse(CheckIconData);
-        _calcCopyIcon.Fill = new SolidColorBrush(Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent);
+        if (_calcCopyBusy) return;
+        _calcCopyBusy = true;
+
+        _calcWipe.BeginAnimation(OpacityProperty, null);
+        _calcWipe.Opacity = 1;
+        _calcWipeScale.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Tween(0, 1, 460, new CubicEase { EasingMode = EasingMode.EaseOut }));
+        _calcWipe.BeginAnimation(OpacityProperty, Motion.Tween(1, 0, 320, new CubicEase { EasingMode = EasingMode.EaseIn }, delayMs: 420));
+
+        _calcCopyScale.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Tween(1, 0, 160, new CubicEase { EasingMode = EasingMode.EaseIn }));
+        _calcCopyScale.BeginAnimation(ScaleTransform.ScaleYProperty, Motion.Tween(1, 0, 160, new CubicEase { EasingMode = EasingMode.EaseIn }));
+        _calcCheckIcon.BeginAnimation(OpacityProperty, null);
+        _calcCheckIcon.Opacity = 1;
+        _calcCheckIcon.BeginAnimation(ShapePath.StrokeDashOffsetProperty, Motion.Tween(CheckDash, 0, 320, delayMs: 120));
+
         _calcCopyResetTimer?.Stop();
         _calcCopyResetTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1100) };
         _calcCopyResetTimer.Tick += (_, _) =>
         {
             _calcCopyResetTimer!.Stop();
-            _calcCopyIcon.Data = Geometry.Parse(CopyIconData);
-            _calcCopyIcon.Fill = new SolidColorBrush(Color.FromArgb(150, 235, 235, 240));
+            _calcCheckIcon.BeginAnimation(OpacityProperty, Motion.Tween(1, 0, 140));
+            _calcCopyScale.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Spring(0, 1, Motion.Bouncy));
+            _calcCopyScale.BeginAnimation(ScaleTransform.ScaleYProperty, Motion.Spring(0, 1, Motion.Bouncy));
+
+            var release = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(320) };
+            release.Tick += (_, _) =>
+            {
+                release.Stop();
+                _calcCheckIcon.BeginAnimation(ShapePath.StrokeDashOffsetProperty, null);
+                _calcCheckIcon.StrokeDashOffset = CheckDash;
+                _calcCopyBusy = false;
+            };
+            release.Start();
         };
         _calcCopyResetTimer.Start();
     }
@@ -2384,20 +2554,32 @@ public sealed class IslandWindow : Window
         };
     }
 
-    private void UpdatePinVisual(bool hover = false)
+    private void ApplyPinMorph()
     {
+        if (_pinButton == null) return;
+        var m = PinMorph;
+        var t = Math.Clamp(m, 0, 1);
         var accent = Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent;
-        _pinIcon.Fill = _pinned ? new SolidColorBrush(accent) : new SolidColorBrush(Color.FromArgb(190, 255, 255, 255));
-        _pinIcon.RenderTransform = new RotateTransform(_pinned ? 0 : 45);
-        _pinButton.Background = _pinned
-            ? new SolidColorBrush(Color.FromArgb((byte)(hover ? 90 : 60), accent.R, accent.G, accent.B))
-            : new SolidColorBrush(Color.FromArgb((byte)(hover ? 75 : 40), 255, 255, 255));
+
+        _pinButton.CornerRadius = new CornerRadius(Math.Max(0, 13 - 6 * m));
+        _pinScale.ScaleX = _pinScale.ScaleY = 1 + 0.08 * m;
+        _pinRotate.Angle = 45 * (1 - m);
+
+        var idleAlpha = _pinHover ? 75 : 40;
+        _pinBgBrush.Color = Color.FromArgb(
+            (byte)(idleAlpha + (255 - idleAlpha) * t),
+            (byte)(255 + (accent.R - 255) * t),
+            (byte)(255 + (accent.G - 255) * t),
+            (byte)(255 + (accent.B - 255) * t));
+        _pinIconBrush.Color = Color.FromArgb((byte)(190 + 65 * t), 255, 255, 255);
+        if (!ReferenceEquals(_pinButton.Background, _pinBgBrush)) _pinButton.Background = _pinBgBrush;
+        if (!ReferenceEquals(_pinIcon.Fill, _pinIconBrush)) _pinIcon.Fill = _pinIconBrush;
     }
 
     private void SetPinned(bool pinned)
     {
         _pinned = pinned;
-        UpdatePinVisual(hover: true);
+        BeginAnimation(PinMorphProperty, Motion.Spring(PinMorph, pinned ? 1 : 0, Motion.Pin));
         AppSettings.Update(d => d.Pinned = pinned);
         if (pinned) Expand();
         else if (!IsCursorOverHoverZone()) Collapse();
