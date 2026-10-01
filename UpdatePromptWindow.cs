@@ -19,13 +19,14 @@ public sealed class UpdatePromptWindow : FluentWindow
     private readonly StackPanel _progressRow;
     private readonly Button _updateButton;
     private readonly Brush _normalBrush;
+    private readonly ScrollViewer? _notesScroll;
 
-    public UpdatePromptWindow(string version, bool urgent = false)
+    public UpdatePromptWindow(string version, bool urgent = false, string notes = "")
     {
         _version = version;
         Title = "Currency Island";
         Width = 360;
-        Height = 190;
+        Height = string.IsNullOrWhiteSpace(notes) ? 190 : 360;
         ResizeMode = ResizeMode.NoResize;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         ExtendsContentIntoTitleBar = true;
@@ -69,6 +70,18 @@ public sealed class UpdatePromptWindow : FluentWindow
             Margin = new Thickness(0, 0, 0, 16)
         };
         body.Children.Add(_hintText);
+
+        if (!string.IsNullOrWhiteSpace(notes))
+        {
+            _notesScroll = new ScrollViewer
+            {
+                MaxHeight = 150,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                Margin = new Thickness(0, 0, 0, 12),
+                Content = new TextBlock { Text = notes, FontSize = 12, Opacity = 0.8, TextWrapping = TextWrapping.Wrap }
+            };
+            body.Children.Add(_notesScroll);
+        }
 
         _progressRow = new StackPanel
         {
@@ -116,6 +129,7 @@ public sealed class UpdatePromptWindow : FluentWindow
         _questionText.Text = $"Updating to {_version}";
         _questionText.Foreground = _normalBrush;
         _hintText.Visibility = Visibility.Collapsed;
+        if (_notesScroll != null) _notesScroll.Visibility = Visibility.Collapsed;
         _buttonRow.Visibility = Visibility.Collapsed;
         _progressRow.Visibility = Visibility.Visible;
     }
@@ -127,6 +141,7 @@ public sealed class UpdatePromptWindow : FluentWindow
         _questionText.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#D13438")!);
         _hintText.Text = "Try again, or download the latest version manually from the release page.";
         _hintText.Visibility = Visibility.Visible;
+        if (_notesScroll != null) _notesScroll.Visibility = Visibility.Visible;
         _updateButton.Content = "Retry";
         _buttonRow.Visibility = Visibility.Visible;
     }

@@ -10,7 +10,7 @@ public static class UpdateChecker
     private const string LatestReleaseApiUrl =
         "https://api.github.com/repos/kiki-koteyka/CurrencyIsland/releases/latest";
 
-    public sealed record Result(bool UpdateAvailable, string LatestVersion, string ReleaseUrl, string? AssetDownloadUrl, bool IsUrgent);
+    public sealed record Result(bool UpdateAvailable, string LatestVersion, string ReleaseUrl, string? AssetDownloadUrl, bool IsUrgent, string Notes);
 
     public static async Task<Result> CheckAsync()
     {
@@ -42,7 +42,21 @@ public static class UpdateChecker
             }
         }
 
-        return new Result(IsNewer(latestVersion, AppVersion.Current), latestVersion, url, assetUrl, isUrgent);
+        return new Result(IsNewer(latestVersion, AppVersion.Current), latestVersion, url, assetUrl, isUrgent, CleanNotes(body));
+    }
+
+    private static string CleanNotes(string body)
+    {
+        var lines = new System.Collections.Generic.List<string>();
+        foreach (var raw in body.Replace("\r", "").Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0 || line.StartsWith('#')) continue;
+            if (line.StartsWith("URGENT", StringComparison.OrdinalIgnoreCase)) line = line[6..].TrimStart(':', ' ', '-');
+            if (line.StartsWith("- ") || line.StartsWith("* ")) line = "\u2022 " + line[2..];
+            lines.Add(line.Replace("**", "").Replace("`", ""));
+        }
+        return string.Join("\n", lines).Trim();
     }
 
     private static bool IsNewer(string latest, string current)

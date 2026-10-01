@@ -232,7 +232,7 @@ public sealed class SettingsWindow : FluentWindow
                 if (result.UpdateAvailable && result.AssetDownloadUrl is not null)
                 {
                     statusText.Text = $"Update available: {result.LatestVersion}";
-                    ((App)Application.Current).OfferUpdate(result.LatestVersion, result.AssetDownloadUrl);
+                    ((App)Application.Current).OfferUpdate(result.LatestVersion, result.AssetDownloadUrl, result.Notes);
                 }
                 else
                 {
