@@ -1938,7 +1938,7 @@ public sealed class IslandWindow : Window
         _mcBuiltTokens = _mcTokens.Count;
         _mcTokenPanel.Children.Add(_mcInput);
         _mcInput.Visibility = _mcShowResult ? Visibility.Collapsed : Visibility.Visible;
-        if (append) _mcInputShift.BeginAnimation(TranslateTransform.XProperty, Motion.Spring(-20, 0, Motion.Soft));
+        if (append) _mcInputShift.BeginAnimation(TranslateTransform.XProperty, Motion.Spring(24, 0, Motion.Soft));
         _mcScroll.ScrollToRightEnd();
     }
 
