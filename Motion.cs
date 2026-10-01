@@ -34,16 +34,20 @@ public static class Motion
     public static readonly SpringSpec Snappy = new(520, 30, 0.30);
     public static readonly SpringSpec Pin = new(620, 25, 0.32);
 
+    public static bool Enabled = true;
+
+    public static TimeSpan Span(double milliseconds) => TimeSpan.FromMilliseconds(Enabled ? milliseconds : 1);
+
     public static SpringEase Ease(SpringSpec spec) => new() { Stiffness = spec.Stiffness, Damping = spec.Damping, Seconds = spec.Seconds };
 
     public static DoubleAnimation Spring(double from, double to, SpringSpec spec) =>
-        new(from, to, TimeSpan.FromSeconds(spec.Seconds)) { EasingFunction = Ease(spec) };
+        new(from, to, Span(spec.Seconds * 1000)) { EasingFunction = Ease(spec) };
 
     public static DoubleAnimation Tween(double from, double to, int ms, IEasingFunction? ease = null, int delayMs = 0) =>
-        new(from, to, TimeSpan.FromMilliseconds(ms))
+        new(from, to, Span(ms))
         {
             EasingFunction = ease ?? new CubicEase { EasingMode = EasingMode.EaseOut },
-            BeginTime = TimeSpan.FromMilliseconds(delayMs)
+            BeginTime = TimeSpan.FromMilliseconds(Enabled ? delayMs : 0)
         };
 }
 

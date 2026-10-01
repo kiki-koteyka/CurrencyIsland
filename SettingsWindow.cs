@@ -82,6 +82,7 @@ public sealed class SettingsWindow : FluentWindow
         });
         _pageGeneral.Children.Add(BuildAutostartCard());
         _pageGeneral.Children.Add(BuildChartHoverStyleCard());
+        _pageGeneral.Children.Add(BuildAnimationsCard());
         _pageGeneral.Children.Add(BuildStartTabCard());
         _pageGeneral.Children.Add(BuildResetPositionCard());
         contentPanel.Children.Add(_pageGeneral);
@@ -188,6 +189,29 @@ public sealed class SettingsWindow : FluentWindow
             Margin = new Thickness(0, 0, 0, 8),
             Icon = new SymbolIcon { Symbol = SymbolRegular.CursorHover24 },
             Header = new TextBlock { Text = "Crosshair chart hover", FontSize = 14, VerticalAlignment = VerticalAlignment.Center },
+            Content = toggle
+        };
+    }
+
+    private CardControl BuildAnimationsCard()
+    {
+        var toggle = new ToggleSwitch { IsChecked = _data.Animations };
+        toggle.Checked += (_, _) =>
+        {
+            Motion.Enabled = true;
+            AppSettings.Update(d => d.Animations = true);
+        };
+        toggle.Unchecked += (_, _) =>
+        {
+            Motion.Enabled = false;
+            AppSettings.Update(d => d.Animations = false);
+        };
+
+        return new CardControl
+        {
+            Margin = new Thickness(0, 0, 0, 8),
+            Icon = new SymbolIcon { Symbol = SymbolRegular.Sparkle24 },
+            Header = new TextBlock { Text = "Animations", FontSize = 14, VerticalAlignment = VerticalAlignment.Center },
             Content = toggle
         };
     }

@@ -127,6 +127,7 @@ public sealed class IslandWindow : Window
         var startupSettings = AppSettings.Load();
         _chartCrosshairHover = startupSettings.ChartCrosshairHover;
         _pinned = startupSettings.Pinned;
+        Motion.Enabled = startupSettings.Animations;
         _startTab = Math.Clamp(startupSettings.StartTab < 0 ? startupSettings.LastTab : startupSettings.StartTab, 0, TabCount - 1);
 
         WindowStyle = WindowStyle.None;
@@ -1452,7 +1453,7 @@ public sealed class IslandWindow : Window
         _mcResultScale.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Spring(1.15, 1, Motion.Bouncy));
         _mcResultScale.BeginAnimation(ScaleTransform.ScaleYProperty, Motion.Spring(1.15, 1, Motion.Bouncy));
         _mcResultBrush.BeginAnimation(SolidColorBrush.ColorProperty,
-            new ColorAnimation(Color.FromRgb(0, 229, 242), Colors.White, TimeSpan.FromMilliseconds(420)));
+            new ColorAnimation(Color.FromRgb(0, 229, 242), Colors.White, Motion.Span(420)));
     }
 
     private FrameworkElement BuildMultiCalcView()
@@ -1845,6 +1846,11 @@ public sealed class IslandWindow : Window
     private async void McClear()
     {
         if (_mcClearing) return;
+        if (!Motion.Enabled)
+        {
+            McClearNow();
+            return;
+        }
 
         var children = _mcTokenPanel.Children.Cast<UIElement>().Where(c => !ReferenceEquals(c, _mcInput)).ToList();
         if (children.Count == 0)
@@ -2234,6 +2240,12 @@ public sealed class IslandWindow : Window
 
     private async Task PulseSwapAsync(Border swapButton)
     {
+        if (!Motion.Enabled)
+        {
+            SwapCalcCurrencies();
+            return;
+        }
+
         var fields = new[] { _calcAmountField, _calcResultField };
         if (!_swapTransformsReady)
         {
@@ -2282,7 +2294,7 @@ public sealed class IslandWindow : Window
 
     private static DoubleAnimationUsingKeyFrames BumpAnimation(double peak, double ms)
     {
-        var bump = new DoubleAnimationUsingKeyFrames { Duration = TimeSpan.FromMilliseconds(ms) };
+        var bump = new DoubleAnimationUsingKeyFrames { Duration = Motion.Span(ms) };
         bump.KeyFrames.Add(new EasingDoubleKeyFrame(peak, KeyTime.FromPercent(0.4), new CubicEase { EasingMode = EasingMode.EaseOut }));
         bump.KeyFrames.Add(new EasingDoubleKeyFrame(1, KeyTime.FromPercent(1), new CubicEase { EasingMode = EasingMode.EaseInOut }));
         return bump;

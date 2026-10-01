@@ -15,6 +15,7 @@ public sealed class SettingsData
     public bool Pinned { get; set; }
     public int StartTab { get; set; }
     public int LastTab { get; set; }
+    public bool Animations { get; set; } = true;
 }
 
 public static class AppSettings
