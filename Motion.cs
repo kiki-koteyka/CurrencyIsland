@@ -1,6 +1,7 @@
 using System;
 using System.Windows;
 using System.Windows.Media.Animation;
+using System.Windows.Threading;
 
 namespace DynamicIsland;
 
@@ -35,6 +36,29 @@ public static class Motion
     public static readonly SpringSpec Pin = new(620, 25, 0.32);
 
     public static bool Enabled = true;
+
+    public static void Settle(int afterMs, Action settle)
+    {
+        if (!Enabled)
+        {
+            settle();
+            return;
+        }
+
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(afterMs) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            settle();
+        };
+        timer.Start();
+    }
+
+    public static void Clear(IAnimatable target, DependencyProperty property, object finalValue)
+    {
+        target.BeginAnimation(property, null);
+        ((DependencyObject)target).SetValue(property, finalValue);
+    }
 
     public static TimeSpan Span(double milliseconds) => TimeSpan.FromMilliseconds(Enabled ? milliseconds : 1);
 

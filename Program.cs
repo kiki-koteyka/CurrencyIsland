@@ -1411,6 +1411,11 @@ public sealed class IslandWindow : Window
             e.Handled = true;
             press.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Spring(press.ScaleX, 1, Motion.Bouncy));
             press.BeginAnimation(ScaleTransform.ScaleYProperty, Motion.Spring(press.ScaleY, 1, Motion.Bouncy));
+            Motion.Settle(650, () =>
+            {
+                Motion.Clear(press, ScaleTransform.ScaleXProperty, 1.0);
+                Motion.Clear(press, ScaleTransform.ScaleYProperty, 1.0);
+            });
             onClick();
         };
         return button;
@@ -1431,21 +1436,35 @@ public sealed class IslandWindow : Window
     {
         row.BeginAnimation(OpacityProperty, Motion.Tween(0.35, 1, 140));
 
-        if (hasSymbol && row.Children.Count > 1 && row.Children[row.Children.Count - 1] is FrameworkElement symbol)
+        FrameworkElement? symbol = hasSymbol && row.Children.Count > 1 ? row.Children[row.Children.Count - 1] as FrameworkElement : null;
+        TranslateTransform? drop = null;
+        if (symbol != null)
         {
-            var drop = new TranslateTransform(0, -16);
+            drop = new TranslateTransform(0, 0);
             symbol.RenderTransform = drop;
             drop.BeginAnimation(TranslateTransform.YProperty, Motion.Spring(-16, 0, Motion.Bouncy));
             symbol.BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 160));
         }
+
+        Motion.Settle(700, () =>
+        {
+            Motion.Clear(row, OpacityProperty, 1.0);
+            if (symbol != null) Motion.Clear(symbol, OpacityProperty, 1.0);
+            if (drop != null) Motion.Clear(drop, TranslateTransform.YProperty, 0.0);
+        });
     }
 
     private static void AnimateNewOperator(FrameworkElement operatorText)
     {
-        var shift = new TranslateTransform(24, 0);
+        var shift = new TranslateTransform(0, 0);
         operatorText.RenderTransform = shift;
         shift.BeginAnimation(TranslateTransform.XProperty, Motion.Spring(24, 0, Motion.Soft));
         operatorText.BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 180));
+        Motion.Settle(700, () =>
+        {
+            Motion.Clear(operatorText, OpacityProperty, 1.0);
+            Motion.Clear(shift, TranslateTransform.XProperty, 0.0);
+        });
     }
 
     private void PopResult()
@@ -1454,6 +1473,12 @@ public sealed class IslandWindow : Window
         _mcResultScale.BeginAnimation(ScaleTransform.ScaleYProperty, Motion.Spring(1.15, 1, Motion.Bouncy));
         _mcResultBrush.BeginAnimation(SolidColorBrush.ColorProperty,
             new ColorAnimation(Color.FromRgb(0, 229, 242), Colors.White, Motion.Span(420)));
+        Motion.Settle(750, () =>
+        {
+            Motion.Clear(_mcResultScale, ScaleTransform.ScaleXProperty, 1.0);
+            Motion.Clear(_mcResultScale, ScaleTransform.ScaleYProperty, 1.0);
+            Motion.Clear(_mcResultBrush, SolidColorBrush.ColorProperty, Colors.White);
+        });
     }
 
     private FrameworkElement BuildMultiCalcView()
@@ -1475,6 +1500,7 @@ public sealed class IslandWindow : Window
             CaretBrush = Brushes.White, SelectionBrush = new SolidColorBrush(Color.FromArgb(90, 255, 255, 255)),
             VerticalAlignment = VerticalAlignment.Center,
             Padding = new Thickness(0),
+            Margin = new Thickness(0, 4, 0, 0),
             RenderTransform = _mcInputShift
         };
         var bareTemplate = new ControlTemplate(typeof(TextBox));
@@ -1938,7 +1964,11 @@ public sealed class IslandWindow : Window
         _mcBuiltTokens = _mcTokens.Count;
         _mcTokenPanel.Children.Add(_mcInput);
         _mcInput.Visibility = _mcShowResult ? Visibility.Collapsed : Visibility.Visible;
-        if (append) _mcInputShift.BeginAnimation(TranslateTransform.XProperty, Motion.Spring(24, 0, Motion.Soft));
+        if (append)
+        {
+            _mcInputShift.BeginAnimation(TranslateTransform.XProperty, Motion.Spring(24, 0, Motion.Soft));
+            Motion.Settle(700, () => Motion.Clear(_mcInputShift, TranslateTransform.XProperty, 0.0));
+        }
         _mcScroll.ScrollToRightEnd();
     }
 
@@ -1993,6 +2023,7 @@ public sealed class IslandWindow : Window
         {
             _mcRevealPending = false;
             _mcResultText.BeginAnimation(Counter.ValueProperty, Motion.Tween(0, value, 520));
+            Motion.Settle(750, () => Motion.Clear(_mcResultText, Counter.ValueProperty, value));
         }
         else
         {
@@ -2135,6 +2166,12 @@ public sealed class IslandWindow : Window
                 closing = false;
             };
             popupBorder.BeginAnimation(Reveal.FractionProperty, shrink);
+            Motion.Settle(450, () =>
+            {
+                if (!closing) return;
+                popup.IsOpen = false;
+                closing = false;
+            });
         }
 
         foreach (var idx in options)
@@ -2193,6 +2230,15 @@ public sealed class IslandWindow : Window
                 items[i].BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 280, delayMs: 40 + i * 32));
                 translate.BeginAnimation(TranslateTransform.YProperty, Motion.Tween(-8, 0, 280, delayMs: 40 + i * 32));
             }
+            Motion.Settle(900, () =>
+            {
+                Motion.Clear(popupBorder, Reveal.FractionProperty, 1.0);
+                foreach (var item in items)
+                {
+                    Motion.Clear(item, OpacityProperty, 1.0);
+                    Motion.Clear((TranslateTransform)item.RenderTransform, TranslateTransform.YProperty, 0.0);
+                }
+            });
         };
         popup.Closed += (_, _) =>
         {
@@ -2288,6 +2334,21 @@ public sealed class IslandWindow : Window
             dimmed.BeginAnimation(OpacityProperty, dip);
         }
 
+        Motion.Settle(900, () =>
+        {
+            Motion.Clear(_swapScale, ScaleTransform.ScaleXProperty, 1.0);
+            Motion.Clear(_swapScale, ScaleTransform.ScaleYProperty, 1.0);
+            Motion.Clear(_swapRotate, RotateTransform.AngleProperty, _swapAngleTarget);
+            Motion.Clear(swapButton, Squircle.FractionProperty, 0.0);
+            foreach (var pulse in _fieldPulse)
+            {
+                Motion.Clear(pulse, ScaleTransform.ScaleXProperty, 1.0);
+                Motion.Clear(pulse, ScaleTransform.ScaleYProperty, 1.0);
+            }
+            foreach (UIElement dimmed in new UIElement[] { _calcResultText, _calcFromChip, _calcToChip })
+                Motion.Clear(dimmed, OpacityProperty, 1.0);
+        });
+
         await Task.Delay(200);
         SwapCalcCurrencies();
     }
@@ -2375,6 +2436,17 @@ public sealed class IslandWindow : Window
             release.Start();
         };
         _calcCopyResetTimer.Start();
+
+        if (Motion.Enabled) Motion.Settle(1800, () =>
+        {
+            Motion.Clear(_calcWipe, OpacityProperty, 0.0);
+            Motion.Clear(_calcWipeScale, ScaleTransform.ScaleXProperty, 0.0);
+            Motion.Clear(_calcCopyScale, ScaleTransform.ScaleXProperty, 1.0);
+            Motion.Clear(_calcCopyScale, ScaleTransform.ScaleYProperty, 1.0);
+            Motion.Clear(_calcCheckIcon, OpacityProperty, 0.0);
+            Motion.Clear(_calcCheckIcon, ShapePath.StrokeDashOffsetProperty, CheckDash);
+            _calcCopyBusy = false;
+        });
     }
 
     private double RateToRub(int currency) => currency switch
@@ -3302,6 +3374,7 @@ public sealed class IslandWindow : Window
     {
         _pinned = pinned;
         BeginAnimation(PinMorphProperty, Motion.Spring(PinMorph, pinned ? 1 : 0, Motion.Pin));
+        Motion.Settle(500, () => Motion.Clear(this, PinMorphProperty, pinned ? 1.0 : 0.0));
         AppSettings.Update(d => d.Pinned = pinned);
         if (pinned) Expand();
         else if (!IsCursorOverHoverZone()) Collapse();
