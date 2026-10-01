@@ -1416,6 +1416,7 @@ public sealed class IslandWindow : Window
     }
 
     private int _mcShownTokens;
+    private StackPanel? _mcValueGroup;
     private string _mcLastResultKey = "";
     private string _mcLastNote = "";
     private bool _mcRevealPending;
@@ -1605,7 +1606,6 @@ public sealed class IslandWindow : Window
         {
             FontSize = 17, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont, Foreground = _mcResultBrush,
             VerticalAlignment = VerticalAlignment.Center, Cursor = Cursors.Hand, TextTrimming = TextTrimming.CharacterEllipsis,
-            RenderTransformOrigin = new Point(0, 0.5), RenderTransform = _mcResultScale
         };
         _mcResultText.PreviewMouseDown += (_, e) => e.Handled = true;
         _mcResultText.MouseLeftButtonUp += (_, e) =>
@@ -1918,14 +1918,24 @@ public sealed class IslandWindow : Window
                 });
             }
         }
+        var termFlying = false;
         for (var i = _mcShownTokens; i < _mcTokens.Count && i < _mcTokenPanel.Children.Count; i++)
         {
             if (_mcTokens[i] is McTerm newTerm && _mcTokenPanel.Children[i] is StackPanel termRow)
+            {
                 AnimateNewTerm(termRow, hasSymbol: newTerm.IsPercent || newTerm.Currency >= 0);
+                termFlying = true;
+            }
             else if (_mcTokenPanel.Children[i] is FrameworkElement operatorText)
                 AnimateNewOperator(operatorText);
         }
         _mcShownTokens = _mcTokens.Count;
+        if (termFlying)
+        {
+            _mcInput.BeginAnimation(OpacityProperty, null);
+            _mcInput.Opacity = 0;
+            _mcInput.BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 140, delayMs: 280));
+        }
 
         _mcTokenPanel.Children.Add(_mcInput);
         _mcInput.Visibility = _mcShowResult ? Visibility.Collapsed : Visibility.Visible;
@@ -1990,18 +2000,25 @@ public sealed class IslandWindow : Window
             _mcResultText.Text = "= " + FormatTotal(value);
             if (changed) PopResult();
         }
-        _mcResultRow.Children.Add(_mcResultText);
+        _mcValueGroup ??= new StackPanel
+        {
+            Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center,
+            RenderTransformOrigin = new Point(0, 0.5), RenderTransform = _mcResultScale
+        };
+        _mcValueGroup.Children.Clear();
+        _mcValueGroup.Children.Add(_mcResultText);
         var symbol = CurrencySymbol(_mcResultCurrency);
         symbol.Margin = new Thickness(6, 0, 0, 0);
         symbol.VerticalAlignment = VerticalAlignment.Center;
-        _mcResultRow.Children.Add(symbol);
+        _mcValueGroup.Children.Add(symbol);
+        _mcResultRow.Children.Add(_mcValueGroup);
         if (McPercentNote() is { } resultNote)
         {
             _mcResultRow.Children.Add(new TextBlock
             {
                 Text = resultNote, FontSize = 10, FontFamily = LabelFont,
                 Foreground = new SolidColorBrush(Color.FromArgb(130, 235, 235, 240)),
-                Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(30, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
                 TextTrimming = TextTrimming.CharacterEllipsis
             });
         }
