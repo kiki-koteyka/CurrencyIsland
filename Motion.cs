@@ -32,7 +32,7 @@ public static class Motion
     public static readonly SpringSpec Bouncy = new(420, 15, 0.55);
     public static readonly SpringSpec Soft = new(240, 22, 0.42);
     public static readonly SpringSpec Snappy = new(520, 30, 0.30);
-    public static readonly SpringSpec Pin = new(700, 26, 0.26);
+    public static readonly SpringSpec Pin = new(620, 25, 0.32);
 
     public static SpringEase Ease(SpringSpec spec) => new() { Stiffness = spec.Stiffness, Damping = spec.Damping, Seconds = spec.Seconds };
 
@@ -70,5 +70,24 @@ public static class Reveal
         var height = target.ActualHeight > 0 ? target.ActualHeight : target.DesiredSize.Height;
         var width = target.ActualWidth > 0 ? target.ActualWidth : target.DesiredSize.Width;
         target.Clip = new System.Windows.Media.RectangleGeometry(new Rect(0, 0, width, Math.Max(0, height * fraction)), 8, 8);
+    }
+}
+
+public static class Squircle
+{
+    public static readonly DependencyProperty FractionProperty = DependencyProperty.RegisterAttached(
+        "Fraction", typeof(double), typeof(Squircle), new PropertyMetadata(0.0, OnFractionChanged));
+
+    public static double GetFraction(DependencyObject element) => (double)element.GetValue(FractionProperty);
+
+    public static void SetFraction(DependencyObject element, double value) => element.SetValue(FractionProperty, value);
+
+    private static void OnFractionChanged(DependencyObject element, DependencyPropertyChangedEventArgs e)
+    {
+        if (element is not System.Windows.Controls.Border border) return;
+
+        var half = Math.Min(border.Width, border.Height) / 2;
+        var fraction = Math.Clamp((double)e.NewValue, 0, 1.2);
+        border.CornerRadius = new CornerRadius(Math.Max(0, half - half * 0.5 * fraction));
     }
 }

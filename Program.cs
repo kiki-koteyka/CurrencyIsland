@@ -927,6 +927,7 @@ public sealed class IslandWindow : Window
         Grid.SetColumn(_calcAmountBox, 0);
         amountRow.Children.Add(_calcAmountBox);
         var fromChip = BuildCurrencyChip(AllCurrencies, _calcFromCurrency, c => { _calcFromCurrency = c; RecalculateCalculator(); }, out _calcFromRefresh);
+        _calcFromChip = fromChip;
         Grid.SetColumn(fromChip, 1);
         amountRow.Children.Add(fromChip);
         amountField.Child = amountRow;
@@ -952,7 +953,7 @@ public sealed class IslandWindow : Window
                 HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
             }
         };
-        swapButton.MouseLeftButtonDown += (_, e) => { e.Handled = true; _ = FlipSwapAsync(swapButton); };
+        swapButton.MouseLeftButtonDown += (_, e) => { e.Handled = true; _ = PulseSwapAsync(swapButton); };
         cardContent.Children.Add(swapButton);
 
         var resultField = new Border
@@ -1033,6 +1034,7 @@ public sealed class IslandWindow : Window
         Grid.SetColumn(copyButton, 1);
         resultRow.Children.Add(copyButton);
         var toChip = BuildCurrencyChip(AllCurrencies, _calcToCurrency, c => { _calcToCurrency = c; RecalculateCalculator(); }, out _calcToRefresh);
+        _calcToChip = toChip;
         Grid.SetColumn(toChip, 2);
         resultRow.Children.Add(toChip);
         resultField.Child = resultRow;
@@ -1535,48 +1537,66 @@ public sealed class IslandWindow : Window
     private Border _calcResultField = null!;
     private bool _swapBusy;
 
-    private async Task FlipSwapAsync(Border swapButton)
+    private Border _calcFromChip = null!;
+    private Border _calcToChip = null!;
+
+    private async Task PulseSwapAsync(Border swapButton)
     {
         if (_swapBusy) return;
         _swapBusy = true;
 
-        var squash = new ScaleTransform(1, 1);
+        var scale = new ScaleTransform(1, 1);
+        var rotate = new RotateTransform(0);
+        var group = new TransformGroup();
+        group.Children.Add(scale);
+        group.Children.Add(rotate);
         swapButton.RenderTransformOrigin = new Point(0.5, 0.5);
-        swapButton.RenderTransform = squash;
-        var squashAnim = new DoubleAnimationUsingKeyFrames { Duration = TimeSpan.FromMilliseconds(380) };
-        squashAnim.KeyFrames.Add(new EasingDoubleKeyFrame(0.78, KeyTime.FromPercent(0.3)));
-        squashAnim.KeyFrames.Add(new EasingDoubleKeyFrame(1, KeyTime.FromPercent(1), Motion.Ease(Motion.Snappy)));
-        squash.BeginAnimation(ScaleTransform.ScaleXProperty, squashAnim);
-        squash.BeginAnimation(ScaleTransform.ScaleYProperty, squashAnim);
+        swapButton.RenderTransform = group;
+
+        var buttonMs = Motion.Bouncy.Seconds * 1000;
+        rotate.BeginAnimation(RotateTransform.AngleProperty, Motion.Spring(0, 180, Motion.Bouncy));
+        scale.BeginAnimation(ScaleTransform.ScaleXProperty, BumpAnimation(1.15, buttonMs));
+        scale.BeginAnimation(ScaleTransform.ScaleYProperty, BumpAnimation(1.15, buttonMs));
+        var morph = new DoubleAnimationUsingKeyFrames { Duration = TimeSpan.FromMilliseconds(buttonMs) };
+        morph.KeyFrames.Add(new EasingDoubleKeyFrame(1, KeyTime.FromPercent(0.45), new CubicEase { EasingMode = EasingMode.EaseOut }));
+        morph.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromPercent(1), new CubicEase { EasingMode = EasingMode.EaseInOut }));
+        swapButton.BeginAnimation(Squircle.FractionProperty, morph);
 
         var fields = new[] { _calcAmountField, _calcResultField };
-        var flips = new ScaleTransform[fields.Length];
         for (var i = 0; i < fields.Length; i++)
         {
-            flips[i] = new ScaleTransform(1, 1);
+            var pulse = new ScaleTransform(1, 1);
             fields[i].RenderTransformOrigin = new Point(0.5, 0.5);
-            fields[i].RenderTransform = flips[i];
-            flips[i].BeginAnimation(ScaleTransform.ScaleYProperty,
-                Motion.Tween(1, 0, 170, new QuadraticEase { EasingMode = EasingMode.EaseIn }, delayMs: i * 60));
+            fields[i].RenderTransform = pulse;
+            var animation = BumpAnimation(1.04, 460);
+            animation.BeginTime = TimeSpan.FromMilliseconds(i * 50);
+            pulse.BeginAnimation(ScaleTransform.ScaleXProperty, animation);
+            pulse.BeginAnimation(ScaleTransform.ScaleYProperty, animation);
         }
 
-        await Task.Delay(250);
+        foreach (UIElement dimmed in new UIElement[] { _calcResultText, _calcFromChip, _calcToChip })
+        {
+            var dip = new DoubleAnimationUsingKeyFrames { Duration = TimeSpan.FromMilliseconds(420), BeginTime = TimeSpan.FromMilliseconds(60) };
+            dip.KeyFrames.Add(new EasingDoubleKeyFrame(0.2, KeyTime.FromPercent(0.35), new CubicEase { EasingMode = EasingMode.EaseOut }));
+            dip.KeyFrames.Add(new EasingDoubleKeyFrame(1, KeyTime.FromPercent(1), new CubicEase { EasingMode = EasingMode.EaseIn }));
+            dimmed.BeginAnimation(OpacityProperty, dip);
+        }
+
+        await Task.Delay(200);
         SwapCalcCurrencies();
 
-        for (var i = 0; i < fields.Length; i++)
-        {
-            flips[i].BeginAnimation(ScaleTransform.ScaleYProperty, null);
-            flips[i].ScaleY = 0;
-            flips[i].BeginAnimation(ScaleTransform.ScaleYProperty,
-                Motion.Tween(0, 1, 300, Motion.Ease(Motion.Snappy), delayMs: i * 60));
-        }
-
-        await Task.Delay(300 + 60 + 40);
-        foreach (var field in fields)
-        {
-            field.RenderTransform = Transform.Identity;
-        }
+        await Task.Delay((int)buttonMs + 60);
+        swapButton.RenderTransform = Transform.Identity;
+        foreach (var field in fields) field.RenderTransform = Transform.Identity;
         _swapBusy = false;
+    }
+
+    private static DoubleAnimationUsingKeyFrames BumpAnimation(double peak, double ms)
+    {
+        var bump = new DoubleAnimationUsingKeyFrames { Duration = TimeSpan.FromMilliseconds(ms) };
+        bump.KeyFrames.Add(new EasingDoubleKeyFrame(peak, KeyTime.FromPercent(0.4), new CubicEase { EasingMode = EasingMode.EaseOut }));
+        bump.KeyFrames.Add(new EasingDoubleKeyFrame(1, KeyTime.FromPercent(1), new CubicEase { EasingMode = EasingMode.EaseInOut }));
+        return bump;
     }
 
     private void SwapCalcCurrencies()
