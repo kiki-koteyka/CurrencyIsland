@@ -127,7 +127,6 @@ public sealed class IslandWindow : Window
         var startupSettings = AppSettings.Load();
         _chartCrosshairHover = startupSettings.ChartCrosshairHover;
         _pinned = startupSettings.Pinned;
-        _calcExpressionMode = startupSettings.CalcExpressionMode;
         _startTab = Math.Clamp(startupSettings.StartTab < 0 ? startupSettings.LastTab : startupSettings.StartTab, 0, TabCount - 1);
 
         WindowStyle = WindowStyle.None;
@@ -881,10 +880,6 @@ public sealed class IslandWindow : Window
     private int _calcToCurrency = CalcRubIndex;
     private CbrHistoryPoint? _calcLatest;
     private TextBox _calcAmountBox = null!;
-    private bool _calcExpressionMode;
-    private double _calcLastAmount = 1;
-    private Border _calcExprButton = null!;
-    private ShapePath _calcExprIcon = null!;
     private TextBlock _calcResultText = null!;
     private Action<int> _calcFromRefresh = null!;
     private Action<int> _calcToRefresh = null!;
@@ -920,7 +915,6 @@ public sealed class IslandWindow : Window
         var amountRow = new Grid();
         amountRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         amountRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        amountRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         _calcAmountBox = new TextBox
         {
             Text = "1",
@@ -944,52 +938,17 @@ public sealed class IslandWindow : Window
         bareTemplate.VisualTree = contentHost;
         _calcAmountBox.Template = bareTemplate;
         _calcAmountBox.TextChanged += (_, _) => RecalculateCalculator();
-        _calcAmountBox.PreviewTextInput += (_, e) =>
-            e.Handled = !(_calcExpressionMode ? IsValidExpressionInput(_calcAmountBox.Text, e.Text) : IsValidAmountInput(_calcAmountBox.Text, e.Text));
+        _calcAmountBox.PreviewTextInput += (_, e) => e.Handled = !IsValidAmountInput(_calcAmountBox.Text, e.Text);
         DataObject.AddPastingHandler(_calcAmountBox, (_, e) =>
         {
             var pasted = e.DataObject.GetData(DataFormats.UnicodeText) as string ?? "";
-            var allowed = _calcExpressionMode ? "0123456789.,+-*/()%" : "0123456789.,";
-            if (pasted.Length == 0 || !pasted.All(allowed.Contains)) e.CancelCommand();
+            if (pasted.Length == 0 || !pasted.All("0123456789.,".Contains)) e.CancelCommand();
         });
-        _calcAmountBox.PreviewKeyDown += (_, e) =>
-        {
-            if (e.Key is not (Key.Enter) || !_calcExpressionMode) return;
-            e.Handled = true;
-            CommitCalcExpression();
-        };
         Grid.SetColumn(_calcAmountBox, 0);
         amountRow.Children.Add(_calcAmountBox);
-
-        _calcExprIcon = new ShapePath
-        {
-            Data = Geometry.Parse("M5,3 H19 A2,2 0 0 1 21,5 V19 A2,2 0 0 1 19,21 H5 A2,2 0 0 1 3,19 V5 A2,2 0 0 1 5,3 Z M7,9 H11 M9,7 V11 M13,8 H17 M7,16 H11 M13,15 H17 M13,17.5 H17"),
-            StrokeThickness = 1.6,
-            StrokeLineJoin = PenLineJoin.Round,
-            StrokeStartLineCap = PenLineCap.Round,
-            StrokeEndLineCap = PenLineCap.Round,
-            Stretch = Stretch.Uniform,
-            Width = 14, Height = 14,
-            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
-        };
-        _calcExprButton = new Border
-        {
-            Width = 24, Height = 24, CornerRadius = new CornerRadius(8),
-            Cursor = Cursors.Hand,
-            Margin = new Thickness(0, 0, 4, 0),
-            VerticalAlignment = VerticalAlignment.Center,
-            Child = _calcExprIcon
-        };
-        _calcExprButton.MouseEnter += (_, _) => UpdateExprButtonVisual(hover: true);
-        _calcExprButton.MouseLeave += (_, _) => UpdateExprButtonVisual();
-        _calcExprButton.PreviewMouseDown += (_, e) => e.Handled = true;
-        _calcExprButton.MouseLeftButtonUp += (_, e) => { e.Handled = true; ToggleCalcExpressionMode(); };
-        UpdateExprButtonVisual();
-        Grid.SetColumn(_calcExprButton, 1);
-        amountRow.Children.Add(_calcExprButton);
         var fromChip = BuildCurrencyChip(AllCurrencies, _calcFromCurrency, c => { _calcFromCurrency = c; RecalculateCalculator(); }, out _calcFromRefresh);
         _calcFromChip = fromChip;
-        Grid.SetColumn(fromChip, 2);
+        Grid.SetColumn(fromChip, 1);
         amountRow.Children.Add(fromChip);
         amountField.Child = amountRow;
         _calcAmountField = amountField;
@@ -1913,143 +1872,6 @@ public sealed class IslandWindow : Window
         }
     }
 
-    private static bool IsValidExpressionInput(string current, string incoming)
-    {
-        const string allowed = "0123456789.,+-*/()%";
-        return incoming.All(allowed.Contains) && current.Length + incoming.Length <= 40;
-    }
-
-    private void UpdateExprButtonVisual(bool hover = false)
-    {
-        var accent = Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent;
-        _calcExprIcon.Stroke = _calcExpressionMode
-            ? new SolidColorBrush(accent)
-            : new SolidColorBrush(Color.FromArgb(150, 235, 235, 240));
-        _calcExprButton.Background = _calcExpressionMode
-            ? new SolidColorBrush(Color.FromArgb((byte)(hover ? 80 : 55), accent.R, accent.G, accent.B))
-            : new SolidColorBrush(Color.FromArgb((byte)(hover ? 30 : 0), 255, 255, 255));
-    }
-
-    private void ToggleCalcExpressionMode()
-    {
-        if (_calcExpressionMode) CommitCalcExpression();
-        _calcExpressionMode = !_calcExpressionMode;
-        UpdateExprButtonVisual(hover: true);
-        var mode = _calcExpressionMode;
-        AppSettings.Update(d => d.CalcExpressionMode = mode);
-        RecalculateCalculator();
-    }
-
-    private void CommitCalcExpression()
-    {
-        if (EvaluateExpression(_calcAmountBox.Text) is not { } value || double.IsNaN(value) || double.IsInfinity(value)) return;
-        _calcAmountBox.Text = value.ToString("0.########", CalcNumberFormat);
-        _calcAmountBox.CaretIndex = _calcAmountBox.Text.Length;
-    }
-
-    private double ParseCalcAmount()
-    {
-        var text = _calcAmountBox.Text;
-        if (!_calcExpressionMode)
-            return double.TryParse(text.Replace(',', '.'), NumberStyles.Any, CultureInfo.InvariantCulture, out var plain) ? plain : 0;
-
-        if (EvaluateExpression(text) is { } value && !double.IsNaN(value) && !double.IsInfinity(value))
-        {
-            _calcLastAmount = value;
-            return value;
-        }
-        return _calcLastAmount;
-    }
-
-    private static double? EvaluateExpression(string text)
-    {
-        var source = text.Replace(',', '.');
-        var position = 0;
-
-        char Peek(int offset = 0) => position + offset < source.Length ? source[position + offset] : '\0';
-
-        bool TryParsePercentOperand(out double percent)
-        {
-            percent = 0;
-            var start = position;
-            while (char.IsDigit(Peek()) || Peek() == '.') position++;
-            if (position > start && Peek() == '%' && Peek(1) is not ('*' or '/')
-                && double.TryParse(source[start..position], NumberStyles.Float, CultureInfo.InvariantCulture, out percent))
-            {
-                position++;
-                return true;
-            }
-            position = start;
-            return false;
-        }
-
-        double? ParseSum()
-        {
-            var left = ParseProduct();
-            while (left != null && (Peek() == '+' || Peek() == '-'))
-            {
-                var op = source[position++];
-                if (TryParsePercentOperand(out var percent))
-                {
-                    left = op == '+' ? left * (1 + percent / 100) : left * (1 - percent / 100);
-                    continue;
-                }
-
-                var right = ParseProduct();
-                if (right == null) return null;
-                left = op == '+' ? left + right : left - right;
-            }
-            return left;
-        }
-
-        double? ParseProduct()
-        {
-            var left = ParseUnary();
-            while (left != null && (Peek() == '*' || Peek() == '/'))
-            {
-                var op = source[position++];
-                var right = ParseUnary();
-                if (right == null) return null;
-                if (op == '/' && right == 0) return null;
-                left = op == '*' ? left * right : left / right;
-            }
-            return left;
-        }
-
-        double? ParseUnary()
-        {
-            if (Peek() == '-') { position++; return -ParseUnary(); }
-            if (Peek() == '+') { position++; return ParseUnary(); }
-            return ParsePrimary();
-        }
-
-        double? ParsePrimary()
-        {
-            if (Peek() == '(')
-            {
-                position++;
-                var inner = ParseSum();
-                if (inner == null || Peek() != ')') return null;
-                position++;
-                return inner;
-            }
-
-            var start = position;
-            while (char.IsDigit(Peek()) || Peek() == '.') position++;
-            if (position == start || !double.TryParse(source[start..position], NumberStyles.Float, CultureInfo.InvariantCulture, out var number))
-                return null;
-            if (Peek() == '%')
-            {
-                position++;
-                return number / 100;
-            }
-            return number;
-        }
-
-        var result = ParseSum();
-        return position == source.Length ? result : null;
-    }
-
     private static bool IsValidAmountInput(string current, string incoming)
     {
         if (incoming is "," ) incoming = ".";
@@ -2409,7 +2231,7 @@ public sealed class IslandWindow : Window
     private void RecalculateCalculator()
     {
         if (_calcLatest == null) return;
-        var amount = ParseCalcAmount();
+        var amount = double.TryParse(_calcAmountBox.Text.Replace(',', '.'), NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed) ? parsed : 0;
         var fromRate = RateToRub(_calcFromCurrency);
         var toRate = RateToRub(_calcToCurrency);
         var result = toRate == 0 ? 0 : amount * fromRate / toRate;
@@ -2418,11 +2240,7 @@ public sealed class IslandWindow : Window
         if (fromRate > 0 && toRate > 0)
         {
             var oneUnit = fromRate / toRate;
-            var rateLine = $"1 {CalcCodes[_calcFromCurrency]} = {FormatCalcNumber(oneUnit)} {CalcCodes[_calcToCurrency]}";
-            var isExpression = _calcExpressionMode && _calcAmountBox.Text.Skip(1).Any("+-*/()%".Contains);
-            _calcRateText.Text = isExpression
-                ? $"= {FormatCalcNumber(amount)} {CalcCodes[_calcFromCurrency]}   |   {rateLine}"
-                : rateLine;
+            _calcRateText.Text = $"1 {CalcCodes[_calcFromCurrency]} = {FormatCalcNumber(oneUnit)} {CalcCodes[_calcToCurrency]}";
         }
     }
 

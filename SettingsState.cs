@@ -15,7 +15,6 @@ public sealed class SettingsData
     public bool Pinned { get; set; }
     public int StartTab { get; set; }
     public int LastTab { get; set; }
-    public bool CalcExpressionMode { get; set; }
 }
 
 public static class AppSettings
