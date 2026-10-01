@@ -1616,26 +1616,28 @@ public sealed class IslandWindow : Window
         return rate <= 0 ? null : rub / rate;
     }
 
-    private double? McEvaluateRub()
+    private double? McEvaluateRub() => McEvaluateRub(_mcTokens);
+
+    private double? McEvaluateRub(IList<object> tokens)
     {
-        if (_mcTokens.Count == 0 || _mcTokens.Count % 2 == 0) return null;
-        var baseCurrency = _mcTokens.OfType<McTerm>().FirstOrDefault(t => !t.IsPercent && t.Currency >= 0)?.Currency ?? CalcRubIndex;
+        if (tokens.Count == 0 || tokens.Count % 2 == 0) return null;
+        var baseCurrency = tokens.OfType<McTerm>().FirstOrDefault(t => !t.IsPercent && t.Currency >= 0)?.Currency ?? CalcRubIndex;
 
         var values = new List<double>();
         var percentOperand = new List<bool>();
         var operators = new List<char>();
-        for (var i = 0; i < _mcTokens.Count; i++)
+        for (var i = 0; i < tokens.Count; i++)
         {
             if (i % 2 == 1)
             {
-                if (_mcTokens[i] is not char op) return null;
+                if (tokens[i] is not char op) return null;
                 operators.Add(op);
                 continue;
             }
 
-            if (_mcTokens[i] is not McTerm term) return null;
+            if (tokens[i] is not McTerm term) return null;
             var previous = i > 0 ? operators[^1] : '+';
-            var next = i + 1 < _mcTokens.Count && _mcTokens[i + 1] is char following ? following : '\0';
+            var next = i + 1 < tokens.Count && tokens[i + 1] is char following ? following : '\0';
             var multiplicative = previous is '*' or '/';
 
             if (term.IsPercent)
@@ -1686,6 +1688,40 @@ public sealed class IslandWindow : Window
         return result;
     }
 
+    private static string FormatPlain(double value) =>
+        value == Math.Floor(value) ? value.ToString("#,##0", CalcNumberFormat) : FormatCalcNumber(value);
+
+    private int McBaseCurrency() =>
+        _mcTokens.OfType<McTerm>().FirstOrDefault(t => !t.IsPercent && t.Currency >= 0)?.Currency ?? CalcRubIndex;
+
+    private string? McPercentNote()
+    {
+        var index = -1;
+        for (var i = _mcTokens.Count - 1; i >= 0; i -= 2)
+        {
+            if (_mcTokens[i] is McTerm { IsPercent: true }) { index = i; break; }
+        }
+        if (index < 0) return null;
+
+        var term = (McTerm)_mcTokens[index];
+        var percent = FormatPlain(term.Amount);
+        var previous = index > 0 && _mcTokens[index - 1] is char before ? before : '+';
+        var next = index + 1 < _mcTokens.Count && _mcTokens[index + 1] is char after ? after : '\0';
+        var multiplicative = previous is '*' or '/' || next is '*' or '/';
+        if (index == 0 || multiplicative)
+            return $"{percent}% = {FormatPlain(term.Amount / 100)} as a plain number";
+
+        var baseCurrency = McBaseCurrency();
+        var rate = RateToRub(baseCurrency);
+        if (rate <= 0 || McEvaluateRub(_mcTokens.Take(index - 1).ToList()) is not { } rub) return null;
+
+        var subtotal = rub / rate;
+        var delta = subtotal * term.Amount / 100;
+        var sign = previous == '+' ? "+" : "\u2212";
+        var symbol = CalcSymbols[baseCurrency];
+        return $"{percent}% of {FormatPlain(subtotal)} {symbol} = {sign}{FormatPlain(delta)} {symbol}";
+    }
+
     private bool McCommitInput(int currency, bool percent = false)
     {
         var text = _mcInput.Text.Replace(',', '.');
@@ -1705,14 +1741,22 @@ public sealed class IslandWindow : Window
             return;
         }
 
-        if (McCommitInput(currency)) McRebuildTokens();
+        if (McCommitInput(currency))
+        {
+            McRebuildTokens();
+            McRenderResult();
+        }
         _mcInput.Focus();
     }
 
     private void McAddPercent()
     {
         if (_mcShowResult) return;
-        if (McCommitInput(-1, percent: true)) McRebuildTokens();
+        if (McCommitInput(-1, percent: true))
+        {
+            McRebuildTokens();
+            McRenderResult();
+        }
         _mcInput.Focus();
     }
 
@@ -1779,7 +1823,7 @@ public sealed class IslandWindow : Window
                 var row = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) };
                 row.Children.Add(new TextBlock
                 {
-                    Text = term.Amount == Math.Floor(term.Amount) ? term.Amount.ToString("#,##0", CalcNumberFormat) : FormatCalcNumber(term.Amount), FontSize = 15, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
+                    Text = FormatPlain(term.Amount), FontSize = 15, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
                     Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center
                 });
                 if (term.IsPercent)
@@ -1832,8 +1876,8 @@ public sealed class IslandWindow : Window
         _mcResultRow.Children.Clear();
         if (!_mcShowResult)
         {
-            _mcHint.Text = "Type a number, then pick its currency";
-            _mcResultHint.Text = "Press = to see the total";
+            _mcHint.Text = "Type a number, then pick its currency (or % for a percentage)";
+            _mcResultHint.Text = McPercentNote() is { } note ? note + "   (press =)" : "Press = to see the total";
             _mcResultHint.Visibility = Visibility.Visible;
             _mcResultRow.Visibility = Visibility.Collapsed;
             return;
@@ -1857,6 +1901,16 @@ public sealed class IslandWindow : Window
         symbol.Margin = new Thickness(6, 0, 0, 0);
         symbol.VerticalAlignment = VerticalAlignment.Center;
         _mcResultRow.Children.Add(symbol);
+        if (McPercentNote() is { } resultNote)
+        {
+            _mcResultRow.Children.Add(new TextBlock
+            {
+                Text = resultNote, FontSize = 10, FontFamily = LabelFont,
+                Foreground = new SolidColorBrush(Color.FromArgb(130, 235, 235, 240)),
+                Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            });
+        }
     }
 
     private static bool IsValidExpressionInput(string current, string incoming)
