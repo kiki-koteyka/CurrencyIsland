@@ -949,7 +949,7 @@ public sealed class IslandWindow : Window
         DataObject.AddPastingHandler(_calcAmountBox, (_, e) =>
         {
             var pasted = e.DataObject.GetData(DataFormats.UnicodeText) as string ?? "";
-            var allowed = _calcExpressionMode ? "0123456789.,+-*/()" : "0123456789.,";
+            var allowed = _calcExpressionMode ? "0123456789.,+-*/()%" : "0123456789.,";
             if (pasted.Length == 0 || !pasted.All(allowed.Contains)) e.CancelCommand();
         });
         _calcAmountBox.PreviewKeyDown += (_, e) =>
@@ -1396,6 +1396,7 @@ public sealed class IslandWindow : Window
     {
         public double Amount;
         public int Currency = -1;
+        public bool IsPercent;
     }
 
     private readonly List<object> _mcTokens = new();
@@ -1464,6 +1465,12 @@ public sealed class IslandWindow : Window
                 McAddOperator(e.Text[0]);
                 return;
             }
+            if (e.Text == "%")
+            {
+                e.Handled = true;
+                McAddPercent();
+                return;
+            }
             e.Handled = !IsValidAmountInput(_mcInput.Text, e.Text);
         };
         _mcInput.PreviewKeyDown += (_, e) =>
@@ -1528,7 +1535,7 @@ public sealed class IslandWindow : Window
         }
         root.Children.Add(chips);
 
-        var ops = new System.Windows.Controls.Primitives.UniformGrid { Columns = 7 };
+        var ops = new System.Windows.Controls.Primitives.UniformGrid { Columns = 8 };
         foreach (var (symbol, op) in new[] { ("+", '+'), ("\u2212", '-'), ("\u00D7", '*'), ("\u00F7", '/') })
         {
             var captured = op;
@@ -1538,6 +1545,11 @@ public sealed class IslandWindow : Window
                 HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 2, 0, 3)
             }, () => McAddOperator(captured)));
         }
+        ops.Children.Add(MakeMcButton(new TextBlock
+        {
+            Text = "%", FontSize = 14, FontFamily = ValueFont, FontWeight = FontWeights.Bold, Foreground = Brushes.White,
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 2, 0, 3)
+        }, McAddPercent));
         ops.Children.Add(MakeMcButton(new ShapePath
         {
             Data = Geometry.Parse(BackspaceIconData),
@@ -1607,9 +1619,10 @@ public sealed class IslandWindow : Window
     private double? McEvaluateRub()
     {
         if (_mcTokens.Count == 0 || _mcTokens.Count % 2 == 0) return null;
-        var baseCurrency = _mcTokens.OfType<McTerm>().FirstOrDefault(t => t.Currency >= 0)?.Currency ?? CalcRubIndex;
+        var baseCurrency = _mcTokens.OfType<McTerm>().FirstOrDefault(t => !t.IsPercent && t.Currency >= 0)?.Currency ?? CalcRubIndex;
 
         var values = new List<double>();
+        var percentOperand = new List<bool>();
         var operators = new List<char>();
         for (var i = 0; i < _mcTokens.Count; i++)
         {
@@ -1621,7 +1634,20 @@ public sealed class IslandWindow : Window
             }
 
             if (_mcTokens[i] is not McTerm term) return null;
-            if (i > 0 && operators[^1] is '*' or '/')
+            var previous = i > 0 ? operators[^1] : '+';
+            var next = i + 1 < _mcTokens.Count && _mcTokens[i + 1] is char following ? following : '\0';
+            var multiplicative = previous is '*' or '/';
+
+            if (term.IsPercent)
+            {
+                var additive = i > 0 && !multiplicative && next is not ('*' or '/');
+                values.Add(additive ? term.Amount : term.Amount / 100);
+                percentOperand.Add(additive);
+                continue;
+            }
+
+            percentOperand.Add(false);
+            if (multiplicative)
             {
                 values.Add(term.Amount);
                 continue;
@@ -1633,6 +1659,7 @@ public sealed class IslandWindow : Window
         }
 
         var terms = new List<double> { values[0] };
+        var termIsPercent = new List<bool> { false };
         var sumOperators = new List<char>();
         for (var i = 0; i < operators.Count; i++)
         {
@@ -1646,21 +1673,25 @@ public sealed class IslandWindow : Window
             {
                 sumOperators.Add(operators[i]);
                 terms.Add(values[i + 1]);
+                termIsPercent.Add(percentOperand[i + 1]);
             }
         }
 
         var result = terms[0];
         for (var i = 0; i < sumOperators.Count; i++)
-            result = sumOperators[i] == '+' ? result + terms[i + 1] : result - terms[i + 1];
+        {
+            var operand = termIsPercent[i + 1] ? result * terms[i + 1] / 100 : terms[i + 1];
+            result = sumOperators[i] == '+' ? result + operand : result - operand;
+        }
         return result;
     }
 
-    private bool McCommitInput(int currency)
+    private bool McCommitInput(int currency, bool percent = false)
     {
         var text = _mcInput.Text.Replace(',', '.');
         if (text.Length == 0 || !double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var amount)) return false;
         if (_mcTokens.Count % 2 == 1) return false;
-        _mcTokens.Add(new McTerm { Amount = amount, Currency = currency });
+        _mcTokens.Add(new McTerm { Amount = amount, Currency = currency, IsPercent = percent });
         _mcInput.Text = "";
         return true;
     }
@@ -1675,6 +1706,13 @@ public sealed class IslandWindow : Window
         }
 
         if (McCommitInput(currency)) McRebuildTokens();
+        _mcInput.Focus();
+    }
+
+    private void McAddPercent()
+    {
+        if (_mcShowResult) return;
+        if (McCommitInput(-1, percent: true)) McRebuildTokens();
         _mcInput.Focus();
     }
 
@@ -1744,7 +1782,16 @@ public sealed class IslandWindow : Window
                     Text = term.Amount == Math.Floor(term.Amount) ? term.Amount.ToString("#,##0", CalcNumberFormat) : FormatCalcNumber(term.Amount), FontSize = 15, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
                     Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center
                 });
-                if (term.Currency >= 0)
+                if (term.IsPercent)
+                {
+                    row.Children.Add(new TextBlock
+                    {
+                        Text = "%", FontSize = 15, FontWeight = FontWeights.Bold, FontFamily = ValueFont,
+                        Foreground = new SolidColorBrush(Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent),
+                        Margin = new Thickness(2, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center
+                    });
+                }
+                else if (term.Currency >= 0)
                 {
                     var symbol = CurrencySymbol(term.Currency);
                     symbol.Margin = new Thickness(4, 0, 0, 0);
@@ -1814,7 +1861,7 @@ public sealed class IslandWindow : Window
 
     private static bool IsValidExpressionInput(string current, string incoming)
     {
-        const string allowed = "0123456789.,+-*/()";
+        const string allowed = "0123456789.,+-*/()%";
         return incoming.All(allowed.Contains) && current.Length + incoming.Length <= 40;
     }
 
@@ -1865,7 +1912,22 @@ public sealed class IslandWindow : Window
         var source = text.Replace(',', '.');
         var position = 0;
 
-        char Peek() => position < source.Length ? source[position] : '\0';
+        char Peek(int offset = 0) => position + offset < source.Length ? source[position + offset] : '\0';
+
+        bool TryParsePercentOperand(out double percent)
+        {
+            percent = 0;
+            var start = position;
+            while (char.IsDigit(Peek()) || Peek() == '.') position++;
+            if (position > start && Peek() == '%' && Peek(1) is not ('*' or '/')
+                && double.TryParse(source[start..position], NumberStyles.Float, CultureInfo.InvariantCulture, out percent))
+            {
+                position++;
+                return true;
+            }
+            position = start;
+            return false;
+        }
 
         double? ParseSum()
         {
@@ -1873,6 +1935,12 @@ public sealed class IslandWindow : Window
             while (left != null && (Peek() == '+' || Peek() == '-'))
             {
                 var op = source[position++];
+                if (TryParsePercentOperand(out var percent))
+                {
+                    left = op == '+' ? left * (1 + percent / 100) : left * (1 - percent / 100);
+                    continue;
+                }
+
                 var right = ParseProduct();
                 if (right == null) return null;
                 left = op == '+' ? left + right : left - right;
@@ -1914,9 +1982,14 @@ public sealed class IslandWindow : Window
 
             var start = position;
             while (char.IsDigit(Peek()) || Peek() == '.') position++;
-            return position > start && double.TryParse(source[start..position], NumberStyles.Float, CultureInfo.InvariantCulture, out var number)
-                ? number
-                : null;
+            if (position == start || !double.TryParse(source[start..position], NumberStyles.Float, CultureInfo.InvariantCulture, out var number))
+                return null;
+            if (Peek() == '%')
+            {
+                position++;
+                return number / 100;
+            }
+            return number;
         }
 
         var result = ParseSum();
@@ -2292,7 +2365,7 @@ public sealed class IslandWindow : Window
         {
             var oneUnit = fromRate / toRate;
             var rateLine = $"1 {CalcCodes[_calcFromCurrency]} = {FormatCalcNumber(oneUnit)} {CalcCodes[_calcToCurrency]}";
-            var isExpression = _calcExpressionMode && _calcAmountBox.Text.Skip(1).Any("+-*/()".Contains);
+            var isExpression = _calcExpressionMode && _calcAmountBox.Text.Skip(1).Any("+-*/()%".Contains);
             _calcRateText.Text = isExpression
                 ? $"= {FormatCalcNumber(amount)} {CalcCodes[_calcFromCurrency]}   |   {rateLine}"
                 : rateLine;
