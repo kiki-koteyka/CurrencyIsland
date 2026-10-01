@@ -1371,24 +1371,96 @@ public sealed class IslandWindow : Window
     private int _mcResultCurrency = CalcRubIndex;
     private const string BackspaceIconData = "M22,3H7C6.31,3,5.77,3.35,5.41,3.88L0,12l5.41,8.11C5.77,20.64,6.31,21,7,21h15c1.1,0,2-0.9,2-2V5C24,3.9,23.1,3,22,3z M19,15.59L17.59,17L14,13.41L10.41,17L9,15.59L12.59,12L9,8.41L10.41,7L14,10.59L17.59,7L19,8.41L15.41,12L19,15.59z";
 
-    private Border MakeMcButton(UIElement content, Action onClick, bool accent = false)
+    private Border MakeMcButton(UIElement content, Action onClick, bool accent = false, Func<bool>? selected = null)
     {
         var accentColor = Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent;
-        Color Idle() => accent ? Color.FromArgb(90, accentColor.R, accentColor.G, accentColor.B) : Color.FromArgb(34, 255, 255, 255);
-        Color Hover() => accent ? Color.FromArgb(130, accentColor.R, accentColor.G, accentColor.B) : Color.FromArgb(64, 255, 255, 255);
+        Color Idle() => selected?.Invoke() == true
+            ? Color.FromArgb(120, accentColor.R, accentColor.G, accentColor.B)
+            : accent ? Color.FromArgb(90, accentColor.R, accentColor.G, accentColor.B) : Color.FromArgb(34, 255, 255, 255);
+        Color Hover() => accent || selected?.Invoke() == true
+            ? Color.FromArgb(140, accentColor.R, accentColor.G, accentColor.B)
+            : Color.FromArgb(64, 255, 255, 255);
+        var press = new ScaleTransform(1, 1);
         var button = new Border
         {
             CornerRadius = new CornerRadius(9),
             Margin = new Thickness(2),
             Background = new SolidColorBrush(Idle()),
             Cursor = Cursors.Hand,
+            RenderTransformOrigin = new Point(0.5, 0.5),
+            RenderTransform = press,
             Child = content
         };
         button.MouseEnter += (_, _) => button.Background = new SolidColorBrush(Hover());
-        button.MouseLeave += (_, _) => button.Background = new SolidColorBrush(Idle());
-        button.PreviewMouseDown += (_, e) => e.Handled = true;
-        button.MouseLeftButtonUp += (_, e) => { e.Handled = true; onClick(); };
+        button.MouseLeave += (_, _) =>
+        {
+            button.Background = new SolidColorBrush(Idle());
+            if (press.ScaleX >= 0.99) return;
+            press.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Spring(press.ScaleX, 1, Motion.Snappy));
+            press.BeginAnimation(ScaleTransform.ScaleYProperty, Motion.Spring(press.ScaleY, 1, Motion.Snappy));
+        };
+        button.PreviewMouseDown += (_, e) =>
+        {
+            e.Handled = true;
+            press.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Tween(press.ScaleX, 0.9, 70));
+            press.BeginAnimation(ScaleTransform.ScaleYProperty, Motion.Tween(press.ScaleY, 0.9, 70));
+        };
+        button.MouseLeftButtonUp += (_, e) =>
+        {
+            e.Handled = true;
+            press.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Spring(press.ScaleX, 1, Motion.Bouncy));
+            press.BeginAnimation(ScaleTransform.ScaleYProperty, Motion.Spring(press.ScaleY, 1, Motion.Bouncy));
+            onClick();
+        };
         return button;
+    }
+
+    private int _mcShownTokens;
+    private string _mcLastResultKey = "";
+    private string _mcLastNote = "";
+    private bool _mcRevealPending;
+    private bool _mcClearing;
+    private readonly ScaleTransform _mcResultScale = new(1, 1);
+    private readonly SolidColorBrush _mcResultBrush = new(Colors.White);
+    private readonly TranslateTransform _mcNoteShift = new();
+
+    private static void AnimateNewTerm(StackPanel row, bool hasSymbol)
+    {
+        var shift = new TranslateTransform(46, 0);
+        var scale = new ScaleTransform(1.12, 1.12);
+        var group = new TransformGroup();
+        group.Children.Add(scale);
+        group.Children.Add(shift);
+        row.RenderTransformOrigin = new Point(0, 0.5);
+        row.RenderTransform = group;
+        shift.BeginAnimation(TranslateTransform.XProperty, Motion.Spring(46, 0, Motion.Soft));
+        scale.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Spring(1.12, 1, Motion.Soft));
+        scale.BeginAnimation(ScaleTransform.ScaleYProperty, Motion.Spring(1.12, 1, Motion.Soft));
+        row.BeginAnimation(OpacityProperty, Motion.Tween(0.6, 1, 200));
+
+        if (hasSymbol && row.Children.Count > 1 && row.Children[row.Children.Count - 1] is FrameworkElement symbol)
+        {
+            var drop = new TranslateTransform(0, -16);
+            symbol.RenderTransform = drop;
+            drop.BeginAnimation(TranslateTransform.YProperty, Motion.Spring(-16, 0, Motion.Bouncy));
+            symbol.BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 160));
+        }
+    }
+
+    private static void AnimateNewOperator(FrameworkElement operatorText)
+    {
+        var shift = new TranslateTransform(24, 0);
+        operatorText.RenderTransform = shift;
+        shift.BeginAnimation(TranslateTransform.XProperty, Motion.Spring(24, 0, Motion.Soft));
+        operatorText.BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 180));
+    }
+
+    private void PopResult()
+    {
+        _mcResultScale.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Spring(1.15, 1, Motion.Bouncy));
+        _mcResultScale.BeginAnimation(ScaleTransform.ScaleYProperty, Motion.Spring(1.15, 1, Motion.Bouncy));
+        _mcResultBrush.BeginAnimation(SolidColorBrush.ColorProperty,
+            new ColorAnimation(Color.FromRgb(0, 229, 242), Colors.White, TimeSpan.FromMilliseconds(420)));
     }
 
     private FrameworkElement BuildMultiCalcView()
@@ -1443,7 +1515,7 @@ public sealed class IslandWindow : Window
             if (_mcShowResult && _mcInput.Text.Length > 0)
             {
                 var typed = _mcInput.Text;
-                McClear();
+                McClearNow();
                 _mcInput.Text = typed;
                 _mcInput.CaretIndex = typed.Length;
             }
@@ -1489,7 +1561,7 @@ public sealed class IslandWindow : Window
                 Text = CalcCodes[idx], FontSize = 10.5, FontFamily = LabelFont, Foreground = Brushes.White,
                 Margin = new Thickness(3, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center
             });
-            _mcChips[i] = MakeMcButton(label, () => McAddCurrency(idx));
+            _mcChips[i] = MakeMcButton(label, () => McAddCurrency(idx), selected: () => _mcShowResult && _mcResultCurrency == idx);
             chips.Children.Add(_mcChips[i]);
         }
         root.Children.Add(chips);
@@ -1531,8 +1603,9 @@ public sealed class IslandWindow : Window
 
         _mcResultText = new TextBlock
         {
-            FontSize = 17, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont, Foreground = Brushes.White,
-            VerticalAlignment = VerticalAlignment.Center, Cursor = Cursors.Hand, TextTrimming = TextTrimming.CharacterEllipsis
+            FontSize = 17, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont, Foreground = _mcResultBrush,
+            VerticalAlignment = VerticalAlignment.Center, Cursor = Cursors.Hand, TextTrimming = TextTrimming.CharacterEllipsis,
+            RenderTransformOrigin = new Point(0, 0.5), RenderTransform = _mcResultScale
         };
         _mcResultText.PreviewMouseDown += (_, e) => e.Handled = true;
         _mcResultText.MouseLeftButtonUp += (_, e) =>
@@ -1540,13 +1613,14 @@ public sealed class IslandWindow : Window
             e.Handled = true;
             if (McEvaluateResult() is { } value)
             {
-                try { Clipboard.SetText(FormatCalcNumber(value)); } catch { }
+                try { Clipboard.SetText(FormatTotal(value)); } catch { }
             }
         };
         _mcResultHint = new TextBlock
         {
             FontSize = 11, FontFamily = LabelFont, Foreground = new SolidColorBrush(Color.FromArgb(120, 235, 235, 240)),
-            VerticalAlignment = VerticalAlignment.Center
+            VerticalAlignment = VerticalAlignment.Center,
+            RenderTransform = _mcNoteShift
         };
         _mcResultRow = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         var resultField = new Border
@@ -1646,6 +1720,9 @@ public sealed class IslandWindow : Window
         }
         return result;
     }
+
+    private static string FormatTotal(double value) =>
+        Math.Abs(value) >= 1 ? value.ToString("#,##0.00", CalcNumberFormat) : FormatCalcNumber(value);
 
     private static string FormatPlain(double value) =>
         value == Math.Floor(value) ? value.ToString("#,##0", CalcNumberFormat) : FormatCalcNumber(value);
@@ -1748,6 +1825,7 @@ public sealed class IslandWindow : Window
         if (_mcTokens.Count == 0) return;
 
         _mcShowResult = true;
+        _mcRevealPending = true;
         _mcResultCurrency = _mcTokens.OfType<McTerm>().FirstOrDefault(t => t.Currency >= 0)?.Currency ?? CalcRubIndex;
         McRebuildTokens();
         McRenderResult();
@@ -1763,13 +1841,39 @@ public sealed class IslandWindow : Window
         _mcInput.Focus();
     }
 
-    private void McClear()
+    private void McClearNow()
     {
         _mcTokens.Clear();
         _mcShowResult = false;
         _mcInput.Text = "";
         McRebuildTokens();
         McRenderResult();
+    }
+
+    private async void McClear()
+    {
+        if (_mcClearing) return;
+
+        var children = _mcTokenPanel.Children.Cast<UIElement>().Where(c => !ReferenceEquals(c, _mcInput)).ToList();
+        if (children.Count == 0)
+        {
+            McClearNow();
+            return;
+        }
+
+        _mcClearing = true;
+        for (var i = 0; i < children.Count; i++)
+        {
+            var shift = new TranslateTransform();
+            children[i].RenderTransform = shift;
+            var easeIn = new CubicEase { EasingMode = EasingMode.EaseIn };
+            shift.BeginAnimation(TranslateTransform.XProperty, Motion.Tween(0, -30, 240, easeIn, i * 40));
+            children[i].BeginAnimation(OpacityProperty, Motion.Tween(1, 0, 240, easeIn, i * 40));
+        }
+
+        await Task.Delay(240 + children.Count * 40 + 20);
+        McClearNow();
+        _mcClearing = false;
     }
 
     private void McRebuildTokens()
@@ -1814,6 +1918,15 @@ public sealed class IslandWindow : Window
                 });
             }
         }
+        for (var i = _mcShownTokens; i < _mcTokens.Count && i < _mcTokenPanel.Children.Count; i++)
+        {
+            if (_mcTokens[i] is McTerm newTerm && _mcTokenPanel.Children[i] is StackPanel termRow)
+                AnimateNewTerm(termRow, hasSymbol: newTerm.IsPercent || newTerm.Currency >= 0);
+            else if (_mcTokenPanel.Children[i] is FrameworkElement operatorText)
+                AnimateNewOperator(operatorText);
+        }
+        _mcShownTokens = _mcTokens.Count;
+
         _mcTokenPanel.Children.Add(_mcInput);
         _mcInput.Visibility = _mcShowResult ? Visibility.Collapsed : Visibility.Visible;
         _mcScroll.ScrollToRightEnd();
@@ -1835,8 +1948,16 @@ public sealed class IslandWindow : Window
         _mcResultRow.Children.Clear();
         if (!_mcShowResult)
         {
+            _mcLastResultKey = "";
             _mcHint.Text = "Type a number, then pick its currency (or % for a percentage)";
-            _mcResultHint.Text = McPercentNote() is { } note ? note + "   (press =)" : "Press = to see the total";
+            var note = McPercentNote();
+            _mcResultHint.Text = note != null ? note + "   (press =)" : "Press = to see the total";
+            if (note != null && _mcResultHint.Text != _mcLastNote)
+            {
+                _mcNoteShift.BeginAnimation(TranslateTransform.YProperty, Motion.Spring(-6, 0, Motion.Soft));
+                _mcResultHint.BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 200));
+            }
+            _mcLastNote = _mcResultHint.Text;
             _mcResultHint.Visibility = Visibility.Visible;
             _mcResultRow.Visibility = Visibility.Collapsed;
             return;
@@ -1854,7 +1975,21 @@ public sealed class IslandWindow : Window
             return;
         }
 
-        _mcResultText.Text = "= " + FormatCalcNumber(value);
+        var resultKey = $"{_mcResultCurrency}|{value:F4}";
+        var changed = resultKey != _mcLastResultKey;
+        _mcLastResultKey = resultKey;
+        Counter.SetFormatter(_mcResultText, v => "= " + FormatTotal(v));
+        if (changed && _mcRevealPending)
+        {
+            _mcRevealPending = false;
+            _mcResultText.BeginAnimation(Counter.ValueProperty, Motion.Tween(0, value, 520));
+        }
+        else
+        {
+            _mcResultText.BeginAnimation(Counter.ValueProperty, null);
+            _mcResultText.Text = "= " + FormatTotal(value);
+            if (changed) PopResult();
+        }
         _mcResultRow.Children.Add(_mcResultText);
         var symbol = CurrencySymbol(_mcResultCurrency);
         symbol.Margin = new Thickness(6, 0, 0, 0);
