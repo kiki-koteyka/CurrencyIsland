@@ -1415,7 +1415,8 @@ public sealed class IslandWindow : Window
         return button;
     }
 
-    private int _mcShownTokens;
+    private int _mcBuiltTokens;
+    private readonly TranslateTransform _mcInputShift = new();
     private StackPanel? _mcValueGroup;
     private string _mcLastResultKey = "";
     private string _mcLastNote = "";
@@ -1427,17 +1428,7 @@ public sealed class IslandWindow : Window
 
     private static void AnimateNewTerm(StackPanel row, bool hasSymbol)
     {
-        var shift = new TranslateTransform(46, 0);
-        var scale = new ScaleTransform(1.12, 1.12);
-        var group = new TransformGroup();
-        group.Children.Add(scale);
-        group.Children.Add(shift);
-        row.RenderTransformOrigin = new Point(0, 0.5);
-        row.RenderTransform = group;
-        shift.BeginAnimation(TranslateTransform.XProperty, Motion.Spring(46, 0, Motion.Soft));
-        scale.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Spring(1.12, 1, Motion.Soft));
-        scale.BeginAnimation(ScaleTransform.ScaleYProperty, Motion.Spring(1.12, 1, Motion.Soft));
-        row.BeginAnimation(OpacityProperty, Motion.Tween(0.6, 1, 200));
+        row.BeginAnimation(OpacityProperty, Motion.Tween(0.35, 1, 140));
 
         if (hasSymbol && row.Children.Count > 1 && row.Children[row.Children.Count - 1] is FrameworkElement symbol)
         {
@@ -1478,11 +1469,12 @@ public sealed class IslandWindow : Window
         _mcInput = new TextBox
         {
             MinWidth = 70, Width = 120,
-            FontSize = 17, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
+            FontSize = 16, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
             Foreground = Brushes.White, Background = Brushes.Transparent, BorderThickness = new Thickness(0),
             CaretBrush = Brushes.White, SelectionBrush = new SolidColorBrush(Color.FromArgb(90, 255, 255, 255)),
             VerticalAlignment = VerticalAlignment.Center,
-            Padding = new Thickness(0)
+            Padding = new Thickness(0),
+            RenderTransform = _mcInputShift
         };
         var bareTemplate = new ControlTemplate(typeof(TextBox));
         var contentHost = new FrameworkElementFactory(typeof(ScrollViewer));
@@ -1876,69 +1868,71 @@ public sealed class IslandWindow : Window
         _mcClearing = false;
     }
 
-    private void McRebuildTokens()
+    private FrameworkElement McCreateTokenElement(object token)
     {
-        _mcTokenPanel.Children.Clear();
-        foreach (var token in _mcTokens)
+        if (token is McTerm term)
         {
-            if (token is McTerm term)
+            var row = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) };
+            row.Children.Add(new TextBlock
             {
-                var row = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) };
+                Text = FormatPlain(term.Amount), FontSize = 16, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
+                Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center
+            });
+            if (term.IsPercent)
+            {
                 row.Children.Add(new TextBlock
                 {
-                    Text = FormatPlain(term.Amount), FontSize = 15, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
-                    Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center
-                });
-                if (term.IsPercent)
-                {
-                    row.Children.Add(new TextBlock
-                    {
-                        Text = "%", FontSize = 15, FontWeight = FontWeights.Bold, FontFamily = ValueFont,
-                        Foreground = new SolidColorBrush(Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent),
-                        Margin = new Thickness(2, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center
-                    });
-                }
-                else if (term.Currency >= 0)
-                {
-                    var symbol = CurrencySymbol(term.Currency);
-                    symbol.Margin = new Thickness(4, 0, 0, 0);
-                    symbol.VerticalAlignment = VerticalAlignment.Center;
-                    row.Children.Add(symbol);
-                }
-                _mcTokenPanel.Children.Add(row);
-            }
-            else if (token is char op)
-            {
-                _mcTokenPanel.Children.Add(new TextBlock
-                {
-                    Text = op switch { '*' => "\u00D7", '/' => "\u00F7", '-' => "\u2212", _ => "+" },
-                    FontSize = 15, FontFamily = ValueFont, FontWeight = FontWeights.Bold,
-                    Foreground = new SolidColorBrush(Color.FromArgb(170, 235, 235, 240)),
-                    Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center
+                    Text = "%", FontSize = 16, FontWeight = FontWeights.Bold, FontFamily = ValueFont,
+                    Foreground = new SolidColorBrush(Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent),
+                    Margin = new Thickness(2, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center
                 });
             }
-        }
-        var termFlying = false;
-        for (var i = _mcShownTokens; i < _mcTokens.Count && i < _mcTokenPanel.Children.Count; i++)
-        {
-            if (_mcTokens[i] is McTerm newTerm && _mcTokenPanel.Children[i] is StackPanel termRow)
+            else if (term.Currency >= 0)
             {
-                AnimateNewTerm(termRow, hasSymbol: newTerm.IsPercent || newTerm.Currency >= 0);
-                termFlying = true;
+                var symbol = CurrencySymbol(term.Currency);
+                symbol.Margin = new Thickness(4, 0, 0, 0);
+                symbol.VerticalAlignment = VerticalAlignment.Center;
+                row.Children.Add(symbol);
             }
-            else if (_mcTokenPanel.Children[i] is FrameworkElement operatorText)
-                AnimateNewOperator(operatorText);
-        }
-        _mcShownTokens = _mcTokens.Count;
-        if (termFlying)
-        {
-            _mcInput.BeginAnimation(OpacityProperty, null);
-            _mcInput.Opacity = 0;
-            _mcInput.BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 140, delayMs: 280));
+            return row;
         }
 
+        return new TextBlock
+        {
+            Text = token is char op ? op switch { '*' => "\u00D7", '/' => "\u00F7", '-' => "\u2212", _ => "+" } : "",
+            FontSize = 16, FontFamily = ValueFont, FontWeight = FontWeights.Bold,
+            Foreground = new SolidColorBrush(Color.FromArgb(170, 235, 235, 240)),
+            Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center
+        };
+    }
+
+    private void McRebuildTokens()
+    {
+        var append = _mcTokens.Count > _mcBuiltTokens;
+        _mcTokenPanel.Children.Remove(_mcInput);
+
+        if (!append)
+        {
+            _mcTokenPanel.Children.Clear();
+            foreach (var token in _mcTokens) _mcTokenPanel.Children.Add(McCreateTokenElement(token));
+        }
+        else
+        {
+            for (var i = _mcBuiltTokens; i < _mcTokens.Count; i++)
+            {
+                var element = McCreateTokenElement(_mcTokens[i]);
+                _mcTokenPanel.Children.Add(element);
+                if (_mcTokens[i] is McTerm newTerm && element is StackPanel row)
+                    AnimateNewTerm(row, newTerm.IsPercent || newTerm.Currency >= 0);
+                else
+                    AnimateNewOperator(element);
+            }
+        }
+
+        _mcBuiltTokens = _mcTokens.Count;
         _mcTokenPanel.Children.Add(_mcInput);
         _mcInput.Visibility = _mcShowResult ? Visibility.Collapsed : Visibility.Visible;
+        if (append) _mcInputShift.BeginAnimation(TranslateTransform.XProperty, Motion.Spring(-20, 0, Motion.Soft));
         _mcScroll.ScrollToRightEnd();
     }
 
