@@ -195,9 +195,9 @@ public sealed class SettingsWindow : FluentWindow
     private CardControl BuildStartTabCard()
     {
         var combo = new System.Windows.Controls.ComboBox { MinWidth = 130, VerticalAlignment = VerticalAlignment.Center };
-        foreach (var name in new[] { "Last used", "Rates", "Chart", "Calculator", "Range" })
+        foreach (var name in new[] { "Last used", "Rates", "Chart", "Calculator", "Range", "Multi calc" })
             combo.Items.Add(name);
-        combo.SelectedIndex = Math.Clamp(_data.StartTab + 1, 0, 4);
+        combo.SelectedIndex = Math.Clamp(_data.StartTab + 1, 0, 5);
         combo.SelectionChanged += (_, _) =>
         {
             var index = combo.SelectedIndex;

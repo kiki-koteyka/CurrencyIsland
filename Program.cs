@@ -46,12 +46,12 @@ public sealed class IslandWindow : Window
     // pre-expand corner/growth-alignment math (deciding which corner to
     // grow from before anything has actually resized) so that math never
     // under-estimates how much room the pill might need.
-    private static readonly double[] TabExpandedHeight = { 138, 178, 152, 168 };
+    private static readonly double[] TabExpandedHeight = { 138, 178, 152, 168, 168 };
     private const double EdgeMargin = 0;
     private const double TopEdgeMargin = 0;
     private const double BottomEdgeMargin = 0;
     private const double SnapThreshold = 14;
-    private const int TabCount = 4;
+    private const int TabCount = 5;
     // Content column starts at the root Grid's 18px left margin, so this
     // is what puts a ChartWidth-wide view on the pill's own horizontal center.
     private const double CenteredTabLeftMargin = (ExpandedWidth - 300) / 2 - 18;
@@ -59,6 +59,7 @@ public sealed class IslandWindow : Window
     private const int ChartTabIndex = 1;
     private const int CalculatorTabIndex = 2;
     private const int RangeTabIndex = 3;
+    private const int MultiCalcTabIndex = 4;
     private static readonly TimeSpan CurrencyCacheLifetime = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan AnimDuration = TimeSpan.FromMilliseconds(220);
 
@@ -424,6 +425,7 @@ public sealed class IslandWindow : Window
         _tabViews[ChartTabIndex] = BuildChartView();
         _tabViews[CalculatorTabIndex] = BuildCalculatorView();
         _tabViews[RangeTabIndex] = BuildRangeView();
+        _tabViews[MultiCalcTabIndex] = BuildMultiCalcView();
 
         _collapsedIcon = new ContentControl
         {
@@ -571,6 +573,7 @@ public sealed class IslandWindow : Window
 
         UpdateChartVisual(points);
         UpdateCalculatorRate(points[^1]);
+        McRenderResult();
 
         _collapsedIcon.Content = BuildCollapsedIcon(_currentTab);
         FitCollapsedPillWidth();
@@ -1387,6 +1390,426 @@ public sealed class IslandWindow : Window
         var size = _rangeHoverPill.DesiredSize;
         Canvas.SetLeft(_rangeHoverPill, Math.Clamp(pt.X - size.Width / 2, 0, RangeChartWidth - size.Width));
         Canvas.SetTop(_rangeHoverPill, pt.Y < size.Height + 8 ? RangeChartHeight - size.Height : 0);
+    }
+
+    private sealed class McTerm
+    {
+        public double Amount;
+        public int Currency = -1;
+    }
+
+    private readonly List<object> _mcTokens = new();
+    private StackPanel _mcTokenPanel = null!;
+    private ScrollViewer _mcScroll = null!;
+    private TextBox _mcInput = null!;
+    private TextBlock _mcHint = null!;
+    private Border[] _mcChips = null!;
+    private StackPanel _mcResultRow = null!;
+    private TextBlock _mcResultHint = null!;
+    private TextBlock _mcResultText = null!;
+    private bool _mcShowResult;
+    private int _mcResultCurrency = CalcRubIndex;
+    private const string BackspaceIconData = "M22,3H7C6.31,3,5.77,3.35,5.41,3.88L0,12l5.41,8.11C5.77,20.64,6.31,21,7,21h15c1.1,0,2-0.9,2-2V5C24,3.9,23.1,3,22,3z M19,15.59L17.59,17L14,13.41L10.41,17L9,15.59L12.59,12L9,8.41L10.41,7L14,10.59L17.59,7L19,8.41L15.41,12L19,15.59z";
+
+    private Border MakeMcButton(UIElement content, Action onClick, bool accent = false)
+    {
+        var accentColor = Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent;
+        Color Idle() => accent ? Color.FromArgb(90, accentColor.R, accentColor.G, accentColor.B) : Color.FromArgb(34, 255, 255, 255);
+        Color Hover() => accent ? Color.FromArgb(130, accentColor.R, accentColor.G, accentColor.B) : Color.FromArgb(64, 255, 255, 255);
+        var button = new Border
+        {
+            CornerRadius = new CornerRadius(9),
+            Margin = new Thickness(2),
+            Background = new SolidColorBrush(Idle()),
+            Cursor = Cursors.Hand,
+            Child = content
+        };
+        button.MouseEnter += (_, _) => button.Background = new SolidColorBrush(Hover());
+        button.MouseLeave += (_, _) => button.Background = new SolidColorBrush(Idle());
+        button.PreviewMouseDown += (_, e) => e.Handled = true;
+        button.MouseLeftButtonUp += (_, e) => { e.Handled = true; onClick(); };
+        return button;
+    }
+
+    private FrameworkElement BuildMultiCalcView()
+    {
+        var root = new StackPanel { Width = ChartWidth, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(CenteredTabLeftMargin, 0, 0, 0) };
+
+        _mcTokenPanel = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        _mcScroll = new ScrollViewer
+        {
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Content = _mcTokenPanel
+        };
+        _mcInput = new TextBox
+        {
+            MinWidth = 70, Width = 120,
+            FontSize = 17, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
+            Foreground = Brushes.White, Background = Brushes.Transparent, BorderThickness = new Thickness(0),
+            CaretBrush = Brushes.White, SelectionBrush = new SolidColorBrush(Color.FromArgb(90, 255, 255, 255)),
+            VerticalAlignment = VerticalAlignment.Center,
+            Padding = new Thickness(0)
+        };
+        var bareTemplate = new ControlTemplate(typeof(TextBox));
+        var contentHost = new FrameworkElementFactory(typeof(ScrollViewer));
+        contentHost.Name = "PART_ContentHost";
+        bareTemplate.VisualTree = contentHost;
+        _mcInput.Template = bareTemplate;
+        _mcInput.PreviewTextInput += (_, e) =>
+        {
+            if (e.Text is "+" or "-" or "*" or "/")
+            {
+                e.Handled = true;
+                McAddOperator(e.Text[0]);
+                return;
+            }
+            e.Handled = !IsValidAmountInput(_mcInput.Text, e.Text);
+        };
+        _mcInput.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Enter) { e.Handled = true; McEquals(); }
+            else if (e.Key == Key.Escape) { e.Handled = true; McClear(); }
+            else if (e.Key == Key.Back && _mcInput.Text.Length == 0) { e.Handled = true; McBackspace(); }
+        };
+        _mcInput.TextChanged += (_, _) =>
+        {
+            if (_mcShowResult && _mcInput.Text.Length > 0)
+            {
+                var typed = _mcInput.Text;
+                McClear();
+                _mcInput.Text = typed;
+                _mcInput.CaretIndex = typed.Length;
+            }
+            _mcScroll.ScrollToRightEnd();
+        };
+
+        var tokenField = new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(28, 255, 255, 255)),
+            CornerRadius = new CornerRadius(9),
+            Padding = new Thickness(10, 0, 8, 0),
+            Height = 36,
+            Child = _mcScroll
+        };
+        tokenField.PreviewMouseDown += (_, e) =>
+        {
+            e.Handled = true;
+            Activate();
+            _mcInput.Focus();
+            Keyboard.Focus(_mcInput);
+        };
+        root.Children.Add(tokenField);
+
+        _mcHint = new TextBlock
+        {
+            FontSize = 10, FontFamily = LabelFont,
+            Foreground = new SolidColorBrush(Color.FromArgb(130, 235, 235, 240)),
+            Margin = new Thickness(3, 5, 0, 1)
+        };
+        root.Children.Add(_mcHint);
+
+        var chips = new System.Windows.Controls.Primitives.UniformGrid { Columns = AllCurrencies.Length };
+        _mcChips = new Border[AllCurrencies.Length];
+        for (var i = 0; i < AllCurrencies.Length; i++)
+        {
+            var idx = AllCurrencies[i];
+            var label = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 4, 0, 4) };
+            var symbol = CurrencySymbol(idx);
+            symbol.VerticalAlignment = VerticalAlignment.Center;
+            label.Children.Add(symbol);
+            label.Children.Add(new TextBlock
+            {
+                Text = CalcCodes[idx], FontSize = 10.5, FontFamily = LabelFont, Foreground = Brushes.White,
+                Margin = new Thickness(3, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center
+            });
+            _mcChips[i] = MakeMcButton(label, () => McAddCurrency(idx));
+            chips.Children.Add(_mcChips[i]);
+        }
+        root.Children.Add(chips);
+
+        var ops = new System.Windows.Controls.Primitives.UniformGrid { Columns = 7 };
+        foreach (var (symbol, op) in new[] { ("+", '+'), ("\u2212", '-'), ("\u00D7", '*'), ("\u00F7", '/') })
+        {
+            var captured = op;
+            ops.Children.Add(MakeMcButton(new TextBlock
+            {
+                Text = symbol, FontSize = 15, FontFamily = ValueFont, FontWeight = FontWeights.Bold, Foreground = Brushes.White,
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 2, 0, 3)
+            }, () => McAddOperator(captured)));
+        }
+        ops.Children.Add(MakeMcButton(new ShapePath
+        {
+            Data = Geometry.Parse(BackspaceIconData),
+            Fill = new SolidColorBrush(Color.FromArgb(200, 235, 235, 240)),
+            Stretch = Stretch.Uniform, Width = 15, Height = 15,
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 5, 0, 5)
+        }, McBackspace));
+        ops.Children.Add(MakeMcButton(new TextBlock
+        {
+            Text = "C", FontSize = 13, FontFamily = LabelFont, Foreground = Brushes.White,
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 3, 0, 3)
+        }, McClear));
+        ops.Children.Add(MakeMcButton(new TextBlock
+        {
+            Text = "=", FontSize = 16, FontFamily = ValueFont, FontWeight = FontWeights.Bold, Foreground = Brushes.White,
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 2, 0, 3)
+        }, McEquals, accent: true));
+        ops.Margin = new Thickness(0, 3, 0, 0);
+        root.Children.Add(ops);
+
+        _mcResultText = new TextBlock
+        {
+            FontSize = 17, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont, Foreground = Brushes.White,
+            VerticalAlignment = VerticalAlignment.Center, Cursor = Cursors.Hand, TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        _mcResultText.PreviewMouseDown += (_, e) => e.Handled = true;
+        _mcResultText.MouseLeftButtonUp += (_, e) =>
+        {
+            e.Handled = true;
+            if (McEvaluateResult() is { } value)
+            {
+                try { Clipboard.SetText(FormatCalcNumber(value)); } catch { }
+            }
+        };
+        _mcResultHint = new TextBlock
+        {
+            FontSize = 11, FontFamily = LabelFont, Foreground = new SolidColorBrush(Color.FromArgb(120, 235, 235, 240)),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        _mcResultRow = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        var resultField = new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(16, 255, 255, 255)),
+            CornerRadius = new CornerRadius(9),
+            Padding = new Thickness(10, 0, 8, 0),
+            Height = 34,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        var resultGrid = new Grid();
+        resultGrid.Children.Add(_mcResultHint);
+        resultGrid.Children.Add(_mcResultRow);
+        resultField.Child = resultGrid;
+        root.Children.Add(resultField);
+
+        McRebuildTokens();
+        McRenderResult();
+        return root;
+    }
+
+    private double? McEvaluateResult()
+    {
+        if (McEvaluateRub() is not { } rub) return null;
+        var rate = RateToRub(_mcResultCurrency);
+        return rate <= 0 ? null : rub / rate;
+    }
+
+    private double? McEvaluateRub()
+    {
+        if (_mcTokens.Count == 0 || _mcTokens.Count % 2 == 0) return null;
+        var baseCurrency = _mcTokens.OfType<McTerm>().FirstOrDefault(t => t.Currency >= 0)?.Currency ?? CalcRubIndex;
+
+        var values = new List<double>();
+        var operators = new List<char>();
+        for (var i = 0; i < _mcTokens.Count; i++)
+        {
+            if (i % 2 == 1)
+            {
+                if (_mcTokens[i] is not char op) return null;
+                operators.Add(op);
+                continue;
+            }
+
+            if (_mcTokens[i] is not McTerm term) return null;
+            if (i > 0 && operators[^1] is '*' or '/')
+            {
+                values.Add(term.Amount);
+                continue;
+            }
+
+            var rate = RateToRub(term.Currency >= 0 ? term.Currency : baseCurrency);
+            if (rate <= 0) return null;
+            values.Add(term.Amount * rate);
+        }
+
+        var terms = new List<double> { values[0] };
+        var sumOperators = new List<char>();
+        for (var i = 0; i < operators.Count; i++)
+        {
+            if (operators[i] == '*') terms[^1] *= values[i + 1];
+            else if (operators[i] == '/')
+            {
+                if (values[i + 1] == 0) return null;
+                terms[^1] /= values[i + 1];
+            }
+            else
+            {
+                sumOperators.Add(operators[i]);
+                terms.Add(values[i + 1]);
+            }
+        }
+
+        var result = terms[0];
+        for (var i = 0; i < sumOperators.Count; i++)
+            result = sumOperators[i] == '+' ? result + terms[i + 1] : result - terms[i + 1];
+        return result;
+    }
+
+    private bool McCommitInput(int currency)
+    {
+        var text = _mcInput.Text.Replace(',', '.');
+        if (text.Length == 0 || !double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var amount)) return false;
+        if (_mcTokens.Count % 2 == 1) return false;
+        _mcTokens.Add(new McTerm { Amount = amount, Currency = currency });
+        _mcInput.Text = "";
+        return true;
+    }
+
+    private void McAddCurrency(int currency)
+    {
+        if (_mcShowResult)
+        {
+            _mcResultCurrency = currency;
+            McRenderResult();
+            return;
+        }
+
+        if (McCommitInput(currency)) McRebuildTokens();
+        _mcInput.Focus();
+    }
+
+    private void McAddOperator(char op)
+    {
+        if (_mcShowResult)
+        {
+            if (McEvaluateResult() is not { } value) return;
+            _mcTokens.Clear();
+            _mcTokens.Add(new McTerm { Amount = value, Currency = _mcResultCurrency });
+            _mcShowResult = false;
+        }
+        else if (_mcInput.Text.Length > 0)
+        {
+            McCommitInput(-1);
+        }
+
+        if (_mcTokens.Count == 0) return;
+        if (_mcTokens[^1] is char) _mcTokens[^1] = op;
+        else _mcTokens.Add(op);
+        McRebuildTokens();
+        McRenderResult();
+        _mcInput.Focus();
+    }
+
+    private void McEquals()
+    {
+        if (_mcInput.Text.Length > 0) McCommitInput(-1);
+        if (_mcTokens.Count % 2 == 0 && _mcTokens.Count > 0 && _mcTokens[^1] is char) _mcTokens.RemoveAt(_mcTokens.Count - 1);
+        if (_mcTokens.Count == 0) return;
+
+        _mcShowResult = true;
+        _mcResultCurrency = _mcTokens.OfType<McTerm>().FirstOrDefault(t => t.Currency >= 0)?.Currency ?? CalcRubIndex;
+        McRebuildTokens();
+        McRenderResult();
+    }
+
+    private void McBackspace()
+    {
+        if (_mcShowResult) _mcShowResult = false;
+        else if (_mcInput.Text.Length > 0) _mcInput.Text = _mcInput.Text[..^1];
+        else if (_mcTokens.Count > 0) _mcTokens.RemoveAt(_mcTokens.Count - 1);
+        McRebuildTokens();
+        McRenderResult();
+        _mcInput.Focus();
+    }
+
+    private void McClear()
+    {
+        _mcTokens.Clear();
+        _mcShowResult = false;
+        _mcInput.Text = "";
+        McRebuildTokens();
+        McRenderResult();
+    }
+
+    private void McRebuildTokens()
+    {
+        _mcTokenPanel.Children.Clear();
+        foreach (var token in _mcTokens)
+        {
+            if (token is McTerm term)
+            {
+                var row = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) };
+                row.Children.Add(new TextBlock
+                {
+                    Text = term.Amount == Math.Floor(term.Amount) ? term.Amount.ToString("#,##0", CalcNumberFormat) : FormatCalcNumber(term.Amount), FontSize = 15, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
+                    Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center
+                });
+                if (term.Currency >= 0)
+                {
+                    var symbol = CurrencySymbol(term.Currency);
+                    symbol.Margin = new Thickness(4, 0, 0, 0);
+                    symbol.VerticalAlignment = VerticalAlignment.Center;
+                    row.Children.Add(symbol);
+                }
+                _mcTokenPanel.Children.Add(row);
+            }
+            else if (token is char op)
+            {
+                _mcTokenPanel.Children.Add(new TextBlock
+                {
+                    Text = op switch { '*' => "\u00D7", '/' => "\u00F7", '-' => "\u2212", _ => "+" },
+                    FontSize = 15, FontFamily = ValueFont, FontWeight = FontWeights.Bold,
+                    Foreground = new SolidColorBrush(Color.FromArgb(170, 235, 235, 240)),
+                    Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center
+                });
+            }
+        }
+        _mcTokenPanel.Children.Add(_mcInput);
+        _mcInput.Visibility = _mcShowResult ? Visibility.Collapsed : Visibility.Visible;
+        _mcScroll.ScrollToRightEnd();
+    }
+
+    private void McRenderResult()
+    {
+        if (_mcResultRow == null) return;
+
+        var accent = Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent;
+        for (var i = 0; i < _mcChips.Length; i++)
+        {
+            var selected = _mcShowResult && AllCurrencies[i] == _mcResultCurrency;
+            _mcChips[i].Background = new SolidColorBrush(selected
+                ? Color.FromArgb(120, accent.R, accent.G, accent.B)
+                : Color.FromArgb(34, 255, 255, 255));
+        }
+
+        _mcResultRow.Children.Clear();
+        if (!_mcShowResult)
+        {
+            _mcHint.Text = "Type a number, then pick its currency";
+            _mcResultHint.Text = "Press = to see the total";
+            _mcResultHint.Visibility = Visibility.Visible;
+            _mcResultRow.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        _mcHint.Text = "Convert the total to";
+        _mcResultHint.Visibility = Visibility.Collapsed;
+        _mcResultRow.Visibility = Visibility.Visible;
+
+        if (McEvaluateResult() is not { } value)
+        {
+            _mcResultHint.Text = "Cannot calculate";
+            _mcResultHint.Visibility = Visibility.Visible;
+            _mcResultRow.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        _mcResultText.Text = "= " + FormatCalcNumber(value);
+        _mcResultRow.Children.Add(_mcResultText);
+        var symbol = CurrencySymbol(_mcResultCurrency);
+        symbol.Margin = new Thickness(6, 0, 0, 0);
+        symbol.VerticalAlignment = VerticalAlignment.Center;
+        _mcResultRow.Children.Add(symbol);
     }
 
     private static bool IsValidExpressionInput(string current, string incoming)
@@ -2233,6 +2656,7 @@ public sealed class IslandWindow : Window
         ChartTabIndex => BuildCollapsedRatesRow(),
         CalculatorTabIndex => BuildCollapsedRatesRow(),
         RangeTabIndex => BuildCollapsedRatesRow(),
+        MultiCalcTabIndex => BuildCollapsedRatesRow(),
         _ => null
     };
 
