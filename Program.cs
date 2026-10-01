@@ -1535,43 +1535,50 @@ public sealed class IslandWindow : Window
 
     private Border _calcAmountField = null!;
     private Border _calcResultField = null!;
-    private bool _swapBusy;
 
     private Border _calcFromChip = null!;
     private Border _calcToChip = null!;
 
+    private readonly ScaleTransform _swapScale = new(1, 1);
+    private readonly RotateTransform _swapRotate = new(0);
+    private readonly ScaleTransform[] _fieldPulse = { new(1, 1), new(1, 1) };
+    private double _swapAngleTarget;
+    private bool _swapTransformsReady;
+
     private async Task PulseSwapAsync(Border swapButton)
     {
-        if (_swapBusy) return;
-        _swapBusy = true;
-
-        var scale = new ScaleTransform(1, 1);
-        var rotate = new RotateTransform(0);
-        var group = new TransformGroup();
-        group.Children.Add(scale);
-        group.Children.Add(rotate);
-        swapButton.RenderTransformOrigin = new Point(0.5, 0.5);
-        swapButton.RenderTransform = group;
+        var fields = new[] { _calcAmountField, _calcResultField };
+        if (!_swapTransformsReady)
+        {
+            var group = new TransformGroup();
+            group.Children.Add(_swapScale);
+            group.Children.Add(_swapRotate);
+            swapButton.RenderTransformOrigin = new Point(0.5, 0.5);
+            swapButton.RenderTransform = group;
+            for (var i = 0; i < fields.Length; i++)
+            {
+                fields[i].RenderTransformOrigin = new Point(0.5, 0.5);
+                fields[i].RenderTransform = _fieldPulse[i];
+            }
+            _swapTransformsReady = true;
+        }
 
         var buttonMs = Motion.Bouncy.Seconds * 1000;
-        rotate.BeginAnimation(RotateTransform.AngleProperty, Motion.Spring(0, 180, Motion.Bouncy));
-        scale.BeginAnimation(ScaleTransform.ScaleXProperty, BumpAnimation(1.15, buttonMs));
-        scale.BeginAnimation(ScaleTransform.ScaleYProperty, BumpAnimation(1.15, buttonMs));
+        _swapAngleTarget += 180;
+        _swapRotate.BeginAnimation(RotateTransform.AngleProperty, Motion.Spring(_swapRotate.Angle, _swapAngleTarget, Motion.Bouncy));
+        _swapScale.BeginAnimation(ScaleTransform.ScaleXProperty, BumpAnimation(1.15, buttonMs));
+        _swapScale.BeginAnimation(ScaleTransform.ScaleYProperty, BumpAnimation(1.15, buttonMs));
         var morph = new DoubleAnimationUsingKeyFrames { Duration = TimeSpan.FromMilliseconds(buttonMs) };
         morph.KeyFrames.Add(new EasingDoubleKeyFrame(1, KeyTime.FromPercent(0.45), new CubicEase { EasingMode = EasingMode.EaseOut }));
         morph.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromPercent(1), new CubicEase { EasingMode = EasingMode.EaseInOut }));
         swapButton.BeginAnimation(Squircle.FractionProperty, morph);
 
-        var fields = new[] { _calcAmountField, _calcResultField };
         for (var i = 0; i < fields.Length; i++)
         {
-            var pulse = new ScaleTransform(1, 1);
-            fields[i].RenderTransformOrigin = new Point(0.5, 0.5);
-            fields[i].RenderTransform = pulse;
             var animation = BumpAnimation(1.04, 460);
             animation.BeginTime = TimeSpan.FromMilliseconds(i * 50);
-            pulse.BeginAnimation(ScaleTransform.ScaleXProperty, animation);
-            pulse.BeginAnimation(ScaleTransform.ScaleYProperty, animation);
+            _fieldPulse[i].BeginAnimation(ScaleTransform.ScaleXProperty, animation);
+            _fieldPulse[i].BeginAnimation(ScaleTransform.ScaleYProperty, animation);
         }
 
         foreach (UIElement dimmed in new UIElement[] { _calcResultText, _calcFromChip, _calcToChip })
@@ -1584,11 +1591,6 @@ public sealed class IslandWindow : Window
 
         await Task.Delay(200);
         SwapCalcCurrencies();
-
-        await Task.Delay((int)buttonMs + 60);
-        swapButton.RenderTransform = Transform.Identity;
-        foreach (var field in fields) field.RenderTransform = Transform.Identity;
-        _swapBusy = false;
     }
 
     private static DoubleAnimationUsingKeyFrames BumpAnimation(double peak, double ms)
