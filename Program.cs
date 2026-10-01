@@ -572,6 +572,18 @@ public sealed class IslandWindow : Window
         UpdateCalculatorRate(points[^1]);
 
         _collapsedIcon.Content = BuildCollapsedIcon(_currentTab);
+        FitCollapsedPillWidth();
+    }
+
+    private void FitCollapsedPillWidth()
+    {
+        if (_isExpanded || _resizingTab || _dragging) return;
+
+        var target = GetCollapsedWidth();
+        if (Math.Abs(_shell.Width - target) < 0.5) return;
+
+        _hoverZoneWidth = target;
+        AnimateShell(target, CollapsedHeight, CollapsedHeight / 2, AnimDuration);
     }
 
     // A 5-day trend line per currency, normalized to its OWN min/max (not a
