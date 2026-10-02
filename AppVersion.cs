@@ -2,5 +2,5 @@ namespace DynamicIsland;
 
 public static class AppVersion
 {
-    public const string Current = "1.7.3";
+    public const string Current = "1.7.4";
 }
