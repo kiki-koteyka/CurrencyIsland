@@ -41,7 +41,7 @@ public sealed class IslandWindow : Window
     // Per-tab expanded heights - the table only needs ~95px of content, the
     // chart needs ~170px, the calculator (two amount rows + swap + rate
     // line) sits in between. Index matches
-    // CurrencyTabIndex/ChartTabIndex/CalculatorTabIndex. ExpandedHeight
+    // CurrencyTabIndex/ChartTabIndex/SwapperTabIndex. ExpandedHeight
     // above stays the conservative MAX of this array, still used by the
     // pre-expand corner/growth-alignment math (deciding which corner to
     // grow from before anything has actually resized) so that math never
@@ -57,7 +57,7 @@ public sealed class IslandWindow : Window
     private const double CenteredTabLeftMargin = (ExpandedWidth - 300) / 2 - 18;
     private const int CurrencyTabIndex = 0;
     private const int ChartTabIndex = 1;
-    private const int CalculatorTabIndex = 2;
+    private const int SwapperTabIndex = 2;
     private const int RangeTabIndex = 3;
     private const int MultiCalcTabIndex = 4;
     private static readonly TimeSpan CurrencyCacheLifetime = TimeSpan.FromMinutes(30);
@@ -423,7 +423,7 @@ public sealed class IslandWindow : Window
         };
         _tabViews[CurrencyTabIndex] = BuildRatesView();
         _tabViews[ChartTabIndex] = BuildChartView();
-        _tabViews[CalculatorTabIndex] = BuildCalculatorView();
+        _tabViews[SwapperTabIndex] = BuildCalculatorView();
         _tabViews[RangeTabIndex] = BuildRangeView();
         _tabViews[MultiCalcTabIndex] = BuildMultiCalcView();
 
@@ -1366,6 +1366,8 @@ public sealed class IslandWindow : Window
     private ShapePath _mcCopyIcon = null!;
     private ShapePath _mcCheckIcon = null!;
     private Border _mcCopyButton = null!;
+    private Border _mcWipe = null!;
+    private readonly ScaleTransform _mcWipeScale = new(0, 1);
     private readonly ScaleTransform _mcCopyScale = new(1, 1);
     private DispatcherTimer? _mcCopyTimer;
     private bool _mcCopyBusy;
@@ -1376,6 +1378,11 @@ public sealed class IslandWindow : Window
         try { Clipboard.SetText(FormatTotal(value)); } catch { return; }
         if (_mcCopyBusy) return;
         _mcCopyBusy = true;
+
+        _mcWipe.BeginAnimation(OpacityProperty, null);
+        _mcWipe.Opacity = 1;
+        _mcWipeScale.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Tween(0, 1, 460, new CubicEase { EasingMode = EasingMode.EaseOut }));
+        _mcWipe.BeginAnimation(OpacityProperty, Motion.Tween(1, 0, 320, new CubicEase { EasingMode = EasingMode.EaseIn }, delayMs: 420));
 
         var easeIn = new CubicEase { EasingMode = EasingMode.EaseIn };
         _mcCopyScale.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Tween(1, 0, 160, easeIn));
@@ -1404,6 +1411,17 @@ public sealed class IslandWindow : Window
             release.Start();
         };
         _mcCopyTimer.Start();
+
+        if (Motion.Enabled) Motion.Settle(1800, () =>
+        {
+            Motion.Clear(_mcWipe, OpacityProperty, 0.0);
+            Motion.Clear(_mcWipeScale, ScaleTransform.ScaleXProperty, 0.0);
+            Motion.Clear(_mcCopyScale, ScaleTransform.ScaleXProperty, 1.0);
+            Motion.Clear(_mcCopyScale, ScaleTransform.ScaleYProperty, 1.0);
+            Motion.Clear(_mcCheckIcon, OpacityProperty, 0.0);
+            Motion.Clear(_mcCheckIcon, ShapePath.StrokeDashOffsetProperty, CheckDash);
+            _mcCopyBusy = false;
+        });
     }
     private string _mcLastResultKey = "";
     private string _mcLastNote = "";
@@ -1721,7 +1739,19 @@ public sealed class IslandWindow : Window
             Height = 34,
             Margin = new Thickness(0, 4, 0, 0)
         };
+        var mcAccent = Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent;
+        _mcWipe = new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(70, mcAccent.R, mcAccent.G, mcAccent.B)),
+            CornerRadius = new CornerRadius(9),
+            Margin = new Thickness(-10, 0, -8, 0),
+            Opacity = 0,
+            IsHitTestVisible = false,
+            RenderTransformOrigin = new Point(0, 0.5),
+            RenderTransform = _mcWipeScale
+        };
         var resultGrid = new Grid();
+        resultGrid.Children.Add(_mcWipe);
         resultGrid.Children.Add(_mcResultHint);
         resultGrid.Children.Add(_mcResultRow);
         resultField.Child = resultGrid;
@@ -2859,7 +2889,7 @@ public sealed class IslandWindow : Window
     {
         CurrencyTabIndex => BuildCollapsedRatesRow(),
         ChartTabIndex => BuildCollapsedRatesRow(),
-        CalculatorTabIndex => BuildCollapsedRatesRow(),
+        SwapperTabIndex => BuildCollapsedRatesRow(),
         RangeTabIndex => BuildCollapsedRatesRow(),
         MultiCalcTabIndex => BuildCollapsedRatesRow(),
         _ => null
