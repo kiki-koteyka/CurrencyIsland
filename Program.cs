@@ -1362,6 +1362,61 @@ public sealed class IslandWindow : Window
     private readonly List<object> _mcTokens = new();
     private WrapPanel _mcTokenPanel = null!;
     private ScrollViewer _mcScroll = null!;
+    private Border _mcGhost = null!;
+    private string _mcLastResultKey = "";
+    private string _mcLastNote = "";
+    private bool _mcRevealPending;
+    private readonly ScaleTransform _mcResultScale = new(1, 1);
+    private readonly SolidColorBrush _mcResultBrush = new(Colors.White);
+    private readonly TranslateTransform _mcNoteShift = new();
+
+    private static void AnimateNewTerm(StackPanel row, bool hasSymbol)
+    {
+        var shift = new TranslateTransform(46, 0);
+        row.RenderTransform = shift;
+        shift.BeginAnimation(TranslateTransform.XProperty, Motion.Spring(46, 0, Motion.Soft));
+        row.BeginAnimation(OpacityProperty, Motion.Tween(0.6, 1, 200));
+
+        if (hasSymbol && row.Children.Count > 1 && row.Children[row.Children.Count - 1] is FrameworkElement symbol)
+        {
+            var drop = new TranslateTransform(0, -16);
+            symbol.RenderTransform = drop;
+            drop.BeginAnimation(TranslateTransform.YProperty, Motion.Spring(-16, 0, Motion.Bouncy));
+            symbol.BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 160));
+        }
+    }
+
+    private static void AnimateNewOperator(FrameworkElement operatorText)
+    {
+        var shift = new TranslateTransform(24, 0);
+        operatorText.RenderTransform = shift;
+        shift.BeginAnimation(TranslateTransform.XProperty, Motion.Spring(24, 0, Motion.Soft));
+        operatorText.BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 180));
+    }
+
+    private void PopResult()
+    {
+        _mcResultScale.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Spring(1.15, 1, Motion.Bouncy));
+        _mcResultScale.BeginAnimation(ScaleTransform.ScaleYProperty, Motion.Spring(1.15, 1, Motion.Bouncy));
+        _mcResultBrush.BeginAnimation(SolidColorBrush.ColorProperty,
+            new ColorAnimation(Color.FromRgb(0, 229, 242), Colors.White, Motion.Span(420)));
+    }
+
+    private void SweepClearedTokens()
+    {
+        if (!Motion.Enabled || _mcTokenPanel.ActualWidth < 1 || _mcTokenPanel.Children.Count <= 1) return;
+        var shift = new TranslateTransform();
+        _mcGhost.Width = _mcTokenPanel.ActualWidth;
+        _mcGhost.Height = _mcTokenPanel.ActualHeight;
+        _mcGhost.Background = new VisualBrush(_mcTokenPanel) { Stretch = Stretch.None, AlignmentX = AlignmentX.Left, AlignmentY = AlignmentY.Top };
+        _mcGhost.RenderTransform = shift;
+        _mcGhost.Visibility = Visibility.Visible;
+        var easeIn = new CubicEase { EasingMode = EasingMode.EaseIn };
+        var fade = Motion.Tween(1, 0, 240, easeIn);
+        fade.Completed += (_, _) => _mcGhost.Visibility = Visibility.Collapsed;
+        shift.BeginAnimation(TranslateTransform.XProperty, Motion.Tween(0, -30, 240, easeIn));
+        _mcGhost.BeginAnimation(OpacityProperty, fade);
+    }
     private TextBox _mcInput = null!;
     private TextBlock _mcPlaceholder = null!;
     private Border[] _mcChips = null!;
@@ -1389,12 +1444,27 @@ public sealed class IslandWindow : Window
             Cursor = Cursors.Hand,
             Child = content
         };
+        var press = new ScaleTransform(1, 1);
+        button.RenderTransformOrigin = new Point(0.5, 0.5);
+        button.RenderTransform = press;
+        void Release(SpringSpec spec)
+        {
+            if (press.ScaleX >= 0.995) return;
+            press.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Spring(press.ScaleX, 1, spec));
+            press.BeginAnimation(ScaleTransform.ScaleYProperty, Motion.Spring(press.ScaleY, 1, spec));
+        }
         button.MouseEnter += (_, _) => button.Background = new SolidColorBrush(Hover());
-        button.MouseLeave += (_, _) => button.Background = new SolidColorBrush(Idle());
-        button.PreviewMouseDown += (_, e) => e.Handled = true;
+        button.MouseLeave += (_, _) => { button.Background = new SolidColorBrush(Idle()); Release(Motion.Snappy); };
+        button.PreviewMouseDown += (_, e) =>
+        {
+            e.Handled = true;
+            press.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Tween(press.ScaleX, 0.9, 70));
+            press.BeginAnimation(ScaleTransform.ScaleYProperty, Motion.Tween(press.ScaleY, 0.9, 70));
+        };
         button.MouseLeftButtonUp += (_, e) =>
         {
             e.Handled = true;
+            Release(Motion.Bouncy);
             onClick();
         };
         return button;
@@ -1415,7 +1485,7 @@ public sealed class IslandWindow : Window
         };
         _mcInput = new TextBox
         {
-            Width = 100,
+            Width = 100, Height = 24,
             FontSize = 16, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
             Foreground = Brushes.White, Background = Brushes.Transparent, BorderThickness = new Thickness(0),
             CaretBrush = Brushes.White, SelectionBrush = new SolidColorBrush(Color.FromArgb(90, 255, 255, 255)),
@@ -1425,6 +1495,7 @@ public sealed class IslandWindow : Window
         var bareTemplate = new ControlTemplate(typeof(TextBox));
         var contentHost = new FrameworkElementFactory(typeof(ScrollViewer));
         contentHost.Name = "PART_ContentHost";
+        contentHost.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
         bareTemplate.VisualTree = contentHost;
         _mcInput.Template = bareTemplate;
         _mcInput.PreviewTextInput += (_, e) =>
@@ -1471,7 +1542,9 @@ public sealed class IslandWindow : Window
             IsHitTestVisible = false
         };
         var tokenHost = new Grid();
+        _mcGhost = new Border { Visibility = Visibility.Collapsed, IsHitTestVisible = false, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center };
         tokenHost.Children.Add(_mcScroll);
+        tokenHost.Children.Add(_mcGhost);
         tokenHost.Children.Add(_mcPlaceholder);
         var tokenField = new Border
         {
@@ -1546,8 +1619,9 @@ public sealed class IslandWindow : Window
 
         _mcResultText = new TextBlock
         {
-            FontSize = 17, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont, Foreground = Brushes.White,
+            FontSize = 17, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont, Foreground = _mcResultBrush,
             VerticalAlignment = VerticalAlignment.Center, Cursor = Cursors.Hand, TextTrimming = TextTrimming.CharacterEllipsis,
+            RenderTransformOrigin = new Point(0, 0.5), RenderTransform = _mcResultScale,
         };
         _mcResultText.PreviewMouseDown += (_, e) => e.Handled = true;
         _mcResultText.MouseLeftButtonUp += (_, e) =>
@@ -1561,7 +1635,7 @@ public sealed class IslandWindow : Window
         _mcResultHint = new TextBlock
         {
             FontSize = 11, FontFamily = LabelFont, Foreground = new SolidColorBrush(Color.FromArgb(120, 235, 235, 240)),
-            VerticalAlignment = VerticalAlignment.Center
+            VerticalAlignment = VerticalAlignment.Center, RenderTransform = _mcNoteShift
         };
         _mcResultRow = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         var resultField = new Border
@@ -1720,7 +1794,7 @@ public sealed class IslandWindow : Window
 
         if (McCommitInput(currency))
         {
-            McRebuildTokens();
+            McRebuildTokens(_mcTokens.Count - 1);
             McRenderResult();
         }
         _mcInput.Focus();
@@ -1731,7 +1805,7 @@ public sealed class IslandWindow : Window
         if (_mcShowResult) return;
         if (McCommitInput(-1, percent: true))
         {
-            McRebuildTokens();
+            McRebuildTokens(_mcTokens.Count - 1);
             McRenderResult();
         }
         _mcInput.Focus();
@@ -1752,9 +1826,10 @@ public sealed class IslandWindow : Window
         }
 
         if (_mcTokens.Count == 0) return;
+        var animateFrom = Math.Max(0, _mcTokens.Count - (_mcTokens[^1] is char ? 1 : 0));
         if (_mcTokens[^1] is char) _mcTokens[^1] = op;
         else _mcTokens.Add(op);
-        McRebuildTokens();
+        McRebuildTokens(animateFrom);
         McRenderResult();
         _mcInput.Focus();
     }
@@ -1766,6 +1841,7 @@ public sealed class IslandWindow : Window
         if (_mcTokens.Count == 0) return;
 
         _mcShowResult = true;
+        _mcRevealPending = true;
         _mcResultCurrency = _mcTokens.OfType<McTerm>().FirstOrDefault(t => t.Currency >= 0)?.Currency ?? CalcRubIndex;
         McRebuildTokens();
         McRenderResult();
@@ -1783,6 +1859,7 @@ public sealed class IslandWindow : Window
 
     private void McClear()
     {
+        SweepClearedTokens();
         _mcTokens.Clear();
         _mcShowResult = false;
         _mcInput.Text = "";
@@ -1834,10 +1911,17 @@ public sealed class IslandWindow : Window
         _mcPlaceholder.Visibility = _mcTokens.Count == 0 && _mcInput.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private void McRebuildTokens()
+    private void McRebuildTokens(int animateFrom = -1)
     {
         _mcTokenPanel.Children.Clear();
-        foreach (var token in _mcTokens) _mcTokenPanel.Children.Add(McCreateTokenElement(token));
+        for (var i = 0; i < _mcTokens.Count; i++)
+        {
+            var element = McCreateTokenElement(_mcTokens[i]);
+            _mcTokenPanel.Children.Add(element);
+            if (animateFrom < 0 || i < animateFrom) continue;
+            if (element is StackPanel row && _mcTokens[i] is McTerm term) AnimateNewTerm(row, term.IsPercent || term.Currency >= 0);
+            else AnimateNewOperator(element);
+        }
         _mcTokenPanel.Children.Add(_mcInput);
         _mcInput.Visibility = _mcShowResult ? Visibility.Collapsed : Visibility.Visible;
         McUpdatePlaceholder();
@@ -1862,6 +1946,13 @@ public sealed class IslandWindow : Window
         {
             var note = McPercentNote();
             _mcResultHint.Text = note != null ? note + "   (press =)" : "Press = for the total, % for percentages";
+            if (note != null && _mcResultHint.Text != _mcLastNote)
+            {
+                _mcNoteShift.BeginAnimation(TranslateTransform.YProperty, Motion.Spring(-6, 0, Motion.Soft));
+                _mcResultHint.BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 200));
+            }
+            _mcLastNote = _mcResultHint.Text;
+            _mcLastResultKey = "";
             _mcResultHint.Visibility = Visibility.Visible;
             _mcResultRow.Visibility = Visibility.Collapsed;
             return;
@@ -1877,7 +1968,21 @@ public sealed class IslandWindow : Window
 
         _mcResultHint.Visibility = Visibility.Collapsed;
         _mcResultRow.Visibility = Visibility.Visible;
-        _mcResultText.Text = "= " + FormatTotal(value);
+        var resultKey = $"{_mcResultCurrency}|{value:F4}";
+        var changed = resultKey != _mcLastResultKey;
+        _mcLastResultKey = resultKey;
+        Counter.SetFormatter(_mcResultText, v => "= " + FormatTotal(v));
+        if (changed && _mcRevealPending)
+        {
+            _mcRevealPending = false;
+            _mcResultText.BeginAnimation(Counter.ValueProperty, Motion.Tween(0, value, 520));
+        }
+        else
+        {
+            _mcResultText.BeginAnimation(Counter.ValueProperty, null);
+            _mcResultText.Text = "= " + FormatTotal(value);
+            if (changed) PopResult();
+        }
         _mcResultRow.Children.Add(_mcResultText);
         var symbol = CurrencySymbol(_mcResultCurrency);
         symbol.Margin = new Thickness(6, 0, 0, 0);
