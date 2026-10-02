@@ -1571,6 +1571,12 @@ public sealed class IslandWindow : Window
                 McAddOperator(typedOperator);
                 return;
             }
+            if (e.Text == "=")
+            {
+                e.Handled = true;
+                McEquals();
+                return;
+            }
             if (e.Text == "%")
             {
                 e.Handled = true;
