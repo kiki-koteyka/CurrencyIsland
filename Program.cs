@@ -1482,7 +1482,7 @@ public sealed class IslandWindow : Window
         };
         _mcInput = new TextBox
         {
-            Width = 100, Height = 24,
+            Width = 10, Height = 24,
             FontSize = 16, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
             Foreground = Brushes.White, Background = Brushes.Transparent, BorderThickness = new Thickness(0),
             CaretBrush = Brushes.White, SelectionBrush = new SolidColorBrush(Color.FromArgb(90, 255, 255, 255)),
@@ -1527,7 +1527,10 @@ public sealed class IslandWindow : Window
                 _mcInput.CaretIndex = typed.Length;
             }
             McUpdatePlaceholder();
-            _mcScroll.ScrollToEnd();
+            var probe = new TextBlock { Text = _mcInput.Text, FontSize = 16, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont };
+            probe.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            _mcInput.Width = Math.Max(10, Math.Ceiling(probe.DesiredSize.Width) + 8);
+            _mcScroll.Dispatcher.BeginInvoke(new Action(_mcScroll.ScrollToEnd), DispatcherPriority.Loaded);
         };
 
         _mcPlaceholder = new TextBlock
