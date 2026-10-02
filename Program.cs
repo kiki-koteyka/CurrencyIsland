@@ -1621,7 +1621,6 @@ public sealed class IslandWindow : Window
         {
             FontSize = 17, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont, Foreground = _mcResultBrush,
             VerticalAlignment = VerticalAlignment.Center, Cursor = Cursors.Hand, TextTrimming = TextTrimming.CharacterEllipsis,
-            RenderTransformOrigin = new Point(0, 0.5), RenderTransform = _mcResultScale,
         };
         _mcResultText.PreviewMouseDown += (_, e) => e.Handled = true;
         _mcResultText.MouseLeftButtonUp += (_, e) =>
@@ -1983,11 +1982,13 @@ public sealed class IslandWindow : Window
             _mcResultText.Text = "= " + FormatTotal(value);
             if (changed) PopResult();
         }
-        _mcResultRow.Children.Add(_mcResultText);
         var symbol = CurrencySymbol(_mcResultCurrency);
         symbol.Margin = new Thickness(6, 0, 0, 0);
         symbol.VerticalAlignment = VerticalAlignment.Center;
-        _mcResultRow.Children.Add(symbol);
+        var totalGroup = new StackPanel { Orientation = Orientation.Horizontal, RenderTransformOrigin = new Point(0, 0.5), RenderTransform = _mcResultScale };
+        totalGroup.Children.Add(_mcResultText);
+        totalGroup.Children.Add(symbol);
+        _mcResultRow.Children.Add(totalGroup);
         _mcResultRow.Children.Add(new TextBlock
         {
             Text = McPercentNote() ?? "pick a currency to convert",
