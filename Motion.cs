@@ -119,24 +119,3 @@ public static class Squircle
         border.CornerRadius = new CornerRadius(Math.Max(0, half - half * 0.5 * fraction));
     }
 }
-
-public static class Counter
-{
-    public static readonly DependencyProperty ValueProperty = DependencyProperty.RegisterAttached(
-        "Value", typeof(double), typeof(Counter), new PropertyMetadata(0.0, OnValueChanged));
-
-    public static readonly DependencyProperty FormatterProperty = DependencyProperty.RegisterAttached(
-        "Formatter", typeof(Func<double, string>), typeof(Counter));
-
-    public static double GetValue(DependencyObject element) => (double)element.GetValue(ValueProperty);
-
-    public static void SetValue(DependencyObject element, double value) => element.SetValue(ValueProperty, value);
-
-    public static void SetFormatter(DependencyObject element, Func<double, string> formatter) => element.SetValue(FormatterProperty, formatter);
-
-    private static void OnValueChanged(DependencyObject element, DependencyPropertyChangedEventArgs e)
-    {
-        if (element is System.Windows.Controls.TextBlock text && element.GetValue(FormatterProperty) is Func<double, string> format)
-            text.Text = format((double)e.NewValue);
-    }
-}
