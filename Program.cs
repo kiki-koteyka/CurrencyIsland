@@ -4017,6 +4017,10 @@ public sealed class App : Application
     private string? _updateNotifiedVersion;
     private string? _pendingUpdateAssetUrl;
     private string _pendingUpdateNotes = "";
+    private long _pendingUpdateSize;
+    private DateTime? _pendingUpdatePublished;
+    private string _pendingUpdateReleaseUrl = "";
+    private System.Threading.CancellationTokenSource? _updateCts;
     private bool _updateApplying;
 
     [STAThread]
@@ -4136,6 +4140,9 @@ public sealed class App : Application
             _updateNotifiedVersion = result.LatestVersion;
             _pendingUpdateAssetUrl = result.AssetDownloadUrl;
             _pendingUpdateNotes = result.Notes;
+            _pendingUpdateSize = result.AssetSize;
+            _pendingUpdatePublished = result.Published;
+            _pendingUpdateReleaseUrl = result.ReleaseUrl;
 
             SelfUpdater.Log($"showing update prompt for {result.LatestVersion}");
             ShowUpdatePrompt(result.IsUrgent);
@@ -4148,11 +4155,14 @@ public sealed class App : Application
         }
     }
 
-    public void OfferUpdate(string version, string assetUrl, string notes = "")
+    public void OfferUpdate(string version, string assetUrl, string notes = "", long size = 0, DateTime? published = null, string releaseUrl = "")
     {
         _updateNotifiedVersion = version;
         _pendingUpdateAssetUrl = assetUrl;
         _pendingUpdateNotes = notes;
+        _pendingUpdateSize = size;
+        _pendingUpdatePublished = published;
+        _pendingUpdateReleaseUrl = releaseUrl;
         ShowUpdatePrompt(urgent: false);
     }
 
@@ -4166,8 +4176,9 @@ public sealed class App : Application
             return;
         }
 
-        _updatePromptWindow = new UpdatePromptWindow(_updateNotifiedVersion ?? "", urgent, _pendingUpdateNotes);
+        _updatePromptWindow = new UpdatePromptWindow(_updateNotifiedVersion ?? "", urgent, _pendingUpdateNotes, _pendingUpdateSize, _pendingUpdatePublished, _pendingUpdateReleaseUrl);
         _updatePromptWindow.UpdateAccepted += () => _ = ApplyUpdateAsync(assetUrl, urgent);
+        _updatePromptWindow.CancelRequested += () => _updateCts?.Cancel();
         _updatePromptWindow.Closed += (_, _) => _updatePromptWindow = null;
         _updatePromptWindow.Show();
         _updatePromptWindow.Activate();
@@ -4178,20 +4189,29 @@ public sealed class App : Application
         if (_updateApplying) return;
         _updateApplying = true;
 
+        _updateCts = new System.Threading.CancellationTokenSource();
         try
         {
             SelfUpdater.Log("user accepted the update");
-            await SelfUpdater.DownloadAndRestartAsync(assetUrl, urgent: urgent);
+            var window = _updatePromptWindow;
+            var progress = new Progress<(long Read, long Total)>(p => window?.ReportProgress(p.Read, p.Total));
+            await SelfUpdater.DownloadAndRestartAsync(assetUrl, progress, urgent, stage => window?.SetStage(stage), _updateCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            _updatePromptWindow?.ShowAvailable();
         }
         catch (Exception ex)
         {
             SelfUpdater.Log($"apply failed: {ex}");
-            _updatePromptWindow?.ShowFailure();
+            _updatePromptWindow?.ShowFailure(ex);
             _trayIcon?.ShowBalloonTip(8000, "Currency Island", "Could not install the update. Download the latest version manually from the release page.", Forms.ToolTipIcon.Warning);
         }
         finally
         {
             _updateApplying = false;
+            _updateCts?.Dispose();
+            _updateCts = null;
         }
     }
 

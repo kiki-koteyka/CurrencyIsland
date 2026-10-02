@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace DynamicIsland;
@@ -51,7 +52,7 @@ public static class SelfUpdater
         }
     }
 
-    public static async Task DownloadAndRestartAsync(string downloadUrl, IProgress<double>? progress = null, bool urgent = false)
+    public static async Task DownloadAndRestartAsync(string downloadUrl, IProgress<(long Read, long Total)>? progress = null, bool urgent = false, Action<string>? stage = null, CancellationToken cancellation = default)
     {
         var currentExePath = Environment.ProcessPath;
         if (string.IsNullOrEmpty(currentExePath))
@@ -62,27 +63,35 @@ public static class SelfUpdater
         Log($"update start, current={currentExePath}");
 
         long expectedBytes;
-        using (var client = new HttpClient { Timeout = TimeSpan.FromMinutes(10) })
+        try
         {
+            using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
             client.DefaultRequestHeaders.UserAgent.ParseAdd("CurrencyIsland-UpdateChecker");
-            using var response = await client.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead);
+            using var response = await client.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead, cancellation);
             response.EnsureSuccessStatusCode();
             expectedBytes = response.Content.Headers.ContentLength ?? -1L;
 
-            await using var httpStream = await response.Content.ReadAsStreamAsync();
+            await using var httpStream = await response.Content.ReadAsStreamAsync(cancellation);
             await using var fileStream = new FileStream(newExePath, FileMode.Create, FileAccess.Write, FileShare.None);
 
             var buffer = new byte[81920];
             long totalRead = 0;
             int read;
-            while ((read = await httpStream.ReadAsync(buffer)) > 0)
+            while ((read = await httpStream.ReadAsync(buffer, cancellation)) > 0)
             {
-                await fileStream.WriteAsync(buffer.AsMemory(0, read));
+                await fileStream.WriteAsync(buffer.AsMemory(0, read), cancellation);
                 totalRead += read;
-                if (expectedBytes > 0)
-                    progress?.Report((double)totalRead / expectedBytes);
+                progress?.Report((totalRead, expectedBytes));
             }
         }
+        catch (OperationCanceledException)
+        {
+            Log("download cancelled by the user");
+            try { File.Delete(newExePath); } catch { }
+            throw;
+        }
+
+        stage?.Invoke("verifying");
 
         var downloaded = new FileInfo(newExePath);
         if (downloaded.Length < MinPlausibleExeBytes || (expectedBytes > 0 && downloaded.Length != expectedBytes))
@@ -92,6 +101,7 @@ public static class SelfUpdater
             throw new InvalidDataException("Downloaded update is incomplete.");
         }
 
+        stage?.Invoke("installing");
         var oldPath = currentExePath + ".old";
         try
         {
@@ -131,6 +141,7 @@ public static class SelfUpdater
         }
 
         Log("swap done, launching new exe");
+        stage?.Invoke("restarting");
         Process? launched;
         try
         {

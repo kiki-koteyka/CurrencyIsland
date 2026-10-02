@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -10,7 +10,7 @@ public static class UpdateChecker
     private const string LatestReleaseApiUrl =
         "https://api.github.com/repos/kiki-koteyka/CurrencyIsland/releases/latest";
 
-    public sealed record Result(bool UpdateAvailable, string LatestVersion, string ReleaseUrl, string? AssetDownloadUrl, bool IsUrgent, string Notes);
+    public sealed record Result(bool UpdateAvailable, string LatestVersion, string ReleaseUrl, string? AssetDownloadUrl, bool IsUrgent, string Notes, long AssetSize = 0, DateTime? Published = null);
 
     public static async Task<Result> CheckAsync()
     {
@@ -29,6 +29,12 @@ public static class UpdateChecker
         var body = doc.RootElement.TryGetProperty("body", out var bodyProp) ? bodyProp.GetString() ?? "" : "";
         var isUrgent = body.TrimStart().StartsWith("URGENT", StringComparison.OrdinalIgnoreCase);
 
+        DateTime? published = null;
+        if (doc.RootElement.TryGetProperty("published_at", out var pubProp)
+            && DateTime.TryParse(pubProp.GetString(), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal, out var pubValue))
+            published = pubValue.ToLocalTime();
+
+        long assetSize = 0;
         string? assetUrl = null;
         if (doc.RootElement.TryGetProperty("assets", out var assets))
         {
@@ -37,12 +43,13 @@ public static class UpdateChecker
                 if (asset.GetProperty("name").GetString() == "CurrencyIsland.exe")
                 {
                     assetUrl = asset.GetProperty("browser_download_url").GetString();
+                    if (asset.TryGetProperty("size", out var sizeProp)) assetSize = sizeProp.GetInt64();
                     break;
                 }
             }
         }
 
-        return new Result(IsNewer(latestVersion, AppVersion.Current), latestVersion, url, assetUrl, isUrgent, CleanNotes(body));
+        return new Result(IsNewer(latestVersion, AppVersion.Current), latestVersion, url, assetUrl, isUrgent, CleanNotes(body), assetSize, published);
     }
 
     private static string CleanNotes(string body)

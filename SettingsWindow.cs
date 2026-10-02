@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -256,7 +256,7 @@ public sealed class SettingsWindow : FluentWindow
                 if (result.UpdateAvailable && result.AssetDownloadUrl is not null)
                 {
                     statusText.Text = $"Update available: {result.LatestVersion}";
-                    ((App)Application.Current).OfferUpdate(result.LatestVersion, result.AssetDownloadUrl, result.Notes);
+                    ((App)Application.Current).OfferUpdate(result.LatestVersion, result.AssetDownloadUrl, result.Notes, result.AssetSize, result.Published, result.ReleaseUrl);
                 }
                 else
                 {
