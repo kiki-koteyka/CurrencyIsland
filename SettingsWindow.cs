@@ -84,6 +84,7 @@ public sealed class SettingsWindow : FluentWindow
         _pageGeneral.Children.Add(BuildChartHoverStyleCard());
         _pageGeneral.Children.Add(BuildAnimationsCard());
         _pageGeneral.Children.Add(BuildStartTabCard());
+        _pageGeneral.Children.Add(BuildThemeCard());
         _pageGeneral.Children.Add(BuildResetPositionCard());
         contentPanel.Children.Add(_pageGeneral);
 
@@ -233,6 +234,27 @@ public sealed class SettingsWindow : FluentWindow
             Margin = new Thickness(0, 0, 0, 8),
             Icon = new SymbolIcon { Symbol = SymbolRegular.Star24 },
             Header = new TextBlock { Text = "Start tab", FontSize = 14, VerticalAlignment = VerticalAlignment.Center },
+            Content = combo
+        };
+    }
+
+    private CardControl BuildThemeCard()
+    {
+        var combo = new System.Windows.Controls.ComboBox { MinWidth = 130, VerticalAlignment = VerticalAlignment.Center };
+        foreach (var name in new[] { "System", "Light", "Dark" })
+            combo.Items.Add(name);
+        combo.SelectedIndex = Math.Clamp(_data.Theme, 0, 2);
+        combo.SelectionChanged += (_, _) =>
+        {
+            var index = combo.SelectedIndex;
+            if (index >= 0) AppSettings.Update(d => d.Theme = index);
+        };
+
+        return new CardControl
+        {
+            Margin = new Thickness(0, 0, 0, 8),
+            Icon = new SymbolIcon { Symbol = SymbolRegular.WeatherMoon24 },
+            Header = new TextBlock { Text = "Update window theme", FontSize = 14, VerticalAlignment = VerticalAlignment.Center },
             Content = combo
         };
     }

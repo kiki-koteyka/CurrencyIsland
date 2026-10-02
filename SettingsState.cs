@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Text.Json;
 using Microsoft.Win32;
@@ -16,6 +16,7 @@ public sealed class SettingsData
     public int StartTab { get; set; }
     public int LastTab { get; set; }
     public bool Animations { get; set; } = true;
+    public int Theme { get; set; }
 }
 
 public static class AppSettings

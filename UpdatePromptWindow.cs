@@ -50,7 +50,7 @@ public sealed class UpdatePromptWindow : FluentWindow
     {
         _version = version;
         _releaseUrl = releaseUrl;
-        _p = BuildPalette(IsSystemDark());
+        _p = BuildPalette(IsDark());
 
         Title = "Currency Island";
         Width = 420;
@@ -469,6 +469,12 @@ public sealed class UpdatePromptWindow : FluentWindow
     }
 
     private static string FormatMb(long bytes) => (bytes / 1048576.0).ToString("0.0", CultureInfo.InvariantCulture);
+
+    private static bool IsDark()
+    {
+        var choice = AppSettings.Load().Theme;
+        return choice == 2 || (choice != 1 && IsSystemDark());
+    }
 
     private static bool IsSystemDark()
     {
