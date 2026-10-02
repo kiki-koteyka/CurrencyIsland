@@ -1363,6 +1363,48 @@ public sealed class IslandWindow : Window
     private WrapPanel _mcTokenPanel = null!;
     private ScrollViewer _mcScroll = null!;
     private Border _mcGhost = null!;
+    private ShapePath _mcCopyIcon = null!;
+    private ShapePath _mcCheckIcon = null!;
+    private Border _mcCopyButton = null!;
+    private readonly ScaleTransform _mcCopyScale = new(1, 1);
+    private DispatcherTimer? _mcCopyTimer;
+    private bool _mcCopyBusy;
+
+    private void McCopyResult()
+    {
+        if (McEvaluateResult() is not { } value) return;
+        try { Clipboard.SetText(FormatTotal(value)); } catch { return; }
+        if (_mcCopyBusy) return;
+        _mcCopyBusy = true;
+
+        var easeIn = new CubicEase { EasingMode = EasingMode.EaseIn };
+        _mcCopyScale.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Tween(1, 0, 160, easeIn));
+        _mcCopyScale.BeginAnimation(ScaleTransform.ScaleYProperty, Motion.Tween(1, 0, 160, easeIn));
+        _mcCheckIcon.BeginAnimation(OpacityProperty, null);
+        _mcCheckIcon.Opacity = 1;
+        _mcCheckIcon.BeginAnimation(ShapePath.StrokeDashOffsetProperty, Motion.Tween(CheckDash, 0, 320, delayMs: 120));
+
+        _mcCopyTimer?.Stop();
+        _mcCopyTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1100) };
+        _mcCopyTimer.Tick += (_, _) =>
+        {
+            _mcCopyTimer!.Stop();
+            _mcCheckIcon.BeginAnimation(OpacityProperty, Motion.Tween(1, 0, 140));
+            _mcCopyScale.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Spring(0, 1, Motion.Bouncy));
+            _mcCopyScale.BeginAnimation(ScaleTransform.ScaleYProperty, Motion.Spring(0, 1, Motion.Bouncy));
+
+            var release = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(320) };
+            release.Tick += (_, _) =>
+            {
+                release.Stop();
+                _mcCheckIcon.BeginAnimation(ShapePath.StrokeDashOffsetProperty, null);
+                _mcCheckIcon.StrokeDashOffset = CheckDash;
+                _mcCopyBusy = false;
+            };
+            release.Start();
+        };
+        _mcCopyTimer.Start();
+    }
     private string _mcLastResultKey = "";
     private string _mcLastNote = "";
     private bool _mcRevealPending;
@@ -1623,14 +1665,48 @@ public sealed class IslandWindow : Window
             VerticalAlignment = VerticalAlignment.Center, Cursor = Cursors.Hand, TextTrimming = TextTrimming.CharacterEllipsis,
         };
         _mcResultText.PreviewMouseDown += (_, e) => e.Handled = true;
-        _mcResultText.MouseLeftButtonUp += (_, e) =>
+        _mcResultText.MouseLeftButtonUp += (_, e) => { e.Handled = true; McCopyResult(); };
+        _mcCopyIcon = new ShapePath
         {
-            e.Handled = true;
-            if (McEvaluateResult() is { } value)
-            {
-                try { Clipboard.SetText(FormatTotal(value)); } catch { }
-            }
+            Data = Geometry.Parse(CopyIconData),
+            Fill = new SolidColorBrush(Color.FromArgb(150, 235, 235, 240)),
+            Stretch = Stretch.Uniform,
+            Width = 12, Height = 12,
+            RenderTransformOrigin = new Point(0.5, 0.5),
+            RenderTransform = _mcCopyScale,
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
         };
+        _mcCheckIcon = new ShapePath
+        {
+            Data = Geometry.Parse("M2.6,7.3 L5.8,10.5 L11.4,3.8"),
+            Stroke = new SolidColorBrush(Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent),
+            StrokeThickness = 1.6,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            StrokeLineJoin = PenLineJoin.Round,
+            StrokeDashArray = new DoubleCollection { CheckDash, 20 },
+            StrokeDashOffset = CheckDash,
+            Width = 14, Height = 14,
+            Opacity = 0,
+            IsHitTestVisible = false,
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
+        };
+        var mcCopyGlyphs = new Grid();
+        mcCopyGlyphs.Children.Add(_mcCopyIcon);
+        mcCopyGlyphs.Children.Add(_mcCheckIcon);
+        _mcCopyButton = new Border
+        {
+            Width = 24, Height = 24, CornerRadius = new CornerRadius(8),
+            Background = Brushes.Transparent,
+            Cursor = Cursors.Hand,
+            Margin = new Thickness(4, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = mcCopyGlyphs
+        };
+        _mcCopyButton.MouseEnter += (_, _) => _mcCopyButton.Background = new SolidColorBrush(Color.FromArgb(30, 255, 255, 255));
+        _mcCopyButton.MouseLeave += (_, _) => _mcCopyButton.Background = Brushes.Transparent;
+        _mcCopyButton.PreviewMouseDown += (_, e) => e.Handled = true;
+        _mcCopyButton.MouseLeftButtonUp += (_, e) => { e.Handled = true; McCopyResult(); };
         _mcResultHint = new TextBlock
         {
             FontSize = 11, FontFamily = LabelFont, Foreground = new SolidColorBrush(Color.FromArgb(120, 235, 235, 240)),
@@ -1998,6 +2074,7 @@ public sealed class IslandWindow : Window
         totalGroup.Children.Add(_mcResultText);
         totalGroup.Children.Add(symbol);
         _mcResultRow.Children.Add(totalGroup);
+        _mcResultRow.Children.Add(_mcCopyButton);
         _mcResultRow.Children.Add(new TextBlock
         {
             Text = McPercentNote() ?? "pick a currency to convert",
