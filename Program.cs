@@ -1902,6 +1902,12 @@ public sealed class IslandWindow : Window
             McRebuildTokens(_mcTokens.Count - 1);
             McRenderResult();
         }
+        else if (_mcInput.Text.Length == 0 && _mcTokens.Count > 0 && _mcTokens[^1] is McTerm last && !last.IsPercent && last.Currency != currency)
+        {
+            last.Currency = currency;
+            McRebuildTokens(_mcTokens.Count - 1);
+            McRenderResult();
+        }
         _mcInput.Focus();
     }
 
@@ -2075,6 +2081,7 @@ public sealed class IslandWindow : Window
         _mcResultRow.Visibility = Visibility.Visible;
         var resultKey = $"{_mcResultCurrency}|{value:F4}";
         var changed = resultKey != _mcLastResultKey;
+        var switched = false;
         _mcLastResultKey = resultKey;
         var probe = new TextBlock { Text = FormatTotal(value), FontSize = 17, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont };
         probe.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
@@ -2090,7 +2097,7 @@ public sealed class IslandWindow : Window
         {
             _mcResultText.BeginAnimation(Counter.ValueProperty, null);
             _mcResultText.Text = FormatTotal(value);
-            if (changed) PopResult();
+            switched = changed;
         }
         var symbol = CurrencySymbol(_mcResultCurrency);
         symbol.Margin = new Thickness(6, 0, 0, 0);
@@ -2105,6 +2112,15 @@ public sealed class IslandWindow : Window
         totalGroup.Children.Add(_mcResultText);
         totalGroup.Children.Add(symbol);
         _mcResultRow.Children.Add(totalGroup);
+        if (switched)
+        {
+            var easeOut = new CubicEase { EasingMode = EasingMode.EaseOut };
+            var slide = new TranslateTransform(-8, 0);
+            symbol.RenderTransform = slide;
+            slide.BeginAnimation(TranslateTransform.XProperty, Motion.Tween(-8, 0, 200, easeOut));
+            symbol.BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 200, easeOut));
+            _mcResultText.BeginAnimation(OpacityProperty, Motion.Tween(0.4, 1, 200, easeOut));
+        }
         _mcResultRow.Children.Add(_mcCopyButton);
         _mcResultRow.Children.Add(new TextBlock
         {
