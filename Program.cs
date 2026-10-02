@@ -1372,11 +1372,6 @@ public sealed class IslandWindow : Window
 
     private static void AnimateNewTerm(StackPanel row, bool hasSymbol)
     {
-        var shift = new TranslateTransform(46, 0);
-        row.RenderTransform = shift;
-        shift.BeginAnimation(TranslateTransform.XProperty, Motion.Spring(46, 0, Motion.Soft));
-        row.BeginAnimation(OpacityProperty, Motion.Tween(0.6, 1, 200));
-
         if (hasSymbol && row.Children.Count > 1 && row.Children[row.Children.Count - 1] is FrameworkElement symbol)
         {
             var slide = new TranslateTransform(-8, 0);
@@ -1389,10 +1384,11 @@ public sealed class IslandWindow : Window
 
     private static void AnimateNewOperator(FrameworkElement operatorText)
     {
-        var shift = new TranslateTransform(24, 0);
-        operatorText.RenderTransform = shift;
-        shift.BeginAnimation(TranslateTransform.XProperty, Motion.Spring(24, 0, Motion.Soft));
-        operatorText.BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 180));
+        var slide = new TranslateTransform(-8, 0);
+        operatorText.RenderTransform = slide;
+        var easeOut = new CubicEase { EasingMode = EasingMode.EaseOut };
+        slide.BeginAnimation(TranslateTransform.XProperty, Motion.Tween(-8, 0, 200, easeOut));
+        operatorText.BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 200, easeOut));
     }
 
     private void PopResult()
@@ -1971,7 +1967,11 @@ public sealed class IslandWindow : Window
         var resultKey = $"{_mcResultCurrency}|{value:F4}";
         var changed = resultKey != _mcLastResultKey;
         _mcLastResultKey = resultKey;
-        Counter.SetFormatter(_mcResultText, v => "= " + FormatTotal(v));
+        var probe = new TextBlock { Text = FormatTotal(value), FontSize = 17, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont };
+        probe.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        _mcResultText.Width = Math.Ceiling(probe.DesiredSize.Width) + 1;
+        _mcResultText.TextAlignment = TextAlignment.Right;
+        Counter.SetFormatter(_mcResultText, v => FormatTotal(v));
         if (changed && _mcRevealPending)
         {
             _mcRevealPending = false;
@@ -1980,13 +1980,18 @@ public sealed class IslandWindow : Window
         else
         {
             _mcResultText.BeginAnimation(Counter.ValueProperty, null);
-            _mcResultText.Text = "= " + FormatTotal(value);
+            _mcResultText.Text = FormatTotal(value);
             if (changed) PopResult();
         }
         var symbol = CurrencySymbol(_mcResultCurrency);
         symbol.Margin = new Thickness(6, 0, 0, 0);
         symbol.VerticalAlignment = VerticalAlignment.Center;
         var totalGroup = new StackPanel { Orientation = Orientation.Horizontal, RenderTransformOrigin = new Point(0, 0.5), RenderTransform = _mcResultScale };
+        totalGroup.Children.Add(new TextBlock
+        {
+            Text = "= ", FontSize = 17, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
+            Foreground = _mcResultBrush, VerticalAlignment = VerticalAlignment.Center
+        });
         totalGroup.Children.Add(_mcResultText);
         totalGroup.Children.Add(symbol);
         _mcResultRow.Children.Add(totalGroup);
