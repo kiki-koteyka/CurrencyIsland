@@ -187,6 +187,7 @@ public sealed class UpdatePromptWindow : FluentWindow
         };
         _stageText.Visibility = Visibility.Visible;
         _cancelButton.Visibility = Visibility.Collapsed;
+        _fox.SetShine(stage == "restarting");
     }
 
     public void ShowFailure(Exception error)
@@ -473,7 +474,7 @@ public sealed class UpdatePromptWindow : FluentWindow
     private static bool IsDark()
     {
         var choice = AppSettings.Load().Theme;
-        return choice == 2 || (choice != 1 && IsSystemDark());
+        return choice == 1 || (choice == 2 && IsSystemDark());
     }
 
     private static bool IsSystemDark()
@@ -492,17 +493,16 @@ public sealed class UpdatePromptWindow : FluentWindow
     private static Palette BuildPalette(bool dark)
     {
         var accent = Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent;
-        if (dark) accent = Color.FromRgb(Lift(accent.R), Lift(accent.G), Lift(accent.B));
         var luminance = (0.299 * accent.R + 0.587 * accent.G + 0.114 * accent.B) / 255;
         var accentInk = luminance > 0.6 ? Color.FromRgb(16, 16, 18) : Colors.White;
 
         return dark
             ? new Palette(
-                Color.FromRgb(0x20, 0x23, 0x27), Color.FromRgb(0x2A, 0x2D, 0x32),
-                Color.FromRgb(0xF2, 0xF4, 0xF5), Color.FromArgb(0xA3, 0xF2, 0xF4, 0xF5),
+                Color.FromRgb(0x20, 0x20, 0x20), Color.FromRgb(0x2D, 0x2D, 0x2D),
+                Color.FromRgb(0xFF, 0xFF, 0xFF), Color.FromArgb(0x9E, 0xFF, 0xFF, 0xFF),
                 Color.FromArgb(0x1A, 255, 255, 255), accent, accentInk,
-                Color.FromArgb(0x1C, 255, 255, 255),
-                Color.FromRgb(0xFF, 0x6B, 0x70), Color.FromArgb(0x24, 0xFF, 0x6B, 0x70))
+                Color.FromArgb(0x1A, 255, 255, 255),
+                Color.FromRgb(0xFF, 0x6B, 0x70), Color.FromArgb(0x1A, 0xFF, 0x6B, 0x70))
             : new Palette(
                 Color.FromRgb(0xF7, 0xF8, 0xF9), Color.FromRgb(0xFF, 0xFF, 0xFF),
                 Color.FromRgb(0x14, 0x18, 0x1A), Color.FromArgb(0x9E, 0x14, 0x18, 0x1A),
@@ -510,8 +510,6 @@ public sealed class UpdatePromptWindow : FluentWindow
                 Color.FromArgb(0x1A, 0x14, 0x18, 0x1A),
                 Color.FromRgb(0xC4, 0x2B, 0x31), Color.FromArgb(0x1A, 0xC4, 0x2B, 0x31));
     }
-
-    private static byte Lift(byte channel) => (byte)Math.Min(255, channel + (255 - channel) * 0.18);
 
     private static string DescribeFailure(Exception error)
     {

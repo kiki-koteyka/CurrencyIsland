@@ -241,7 +241,7 @@ public sealed class SettingsWindow : FluentWindow
     private CardControl BuildThemeCard()
     {
         var combo = new System.Windows.Controls.ComboBox { MinWidth = 130, VerticalAlignment = VerticalAlignment.Center };
-        foreach (var name in new[] { "System", "Light", "Dark" })
+        foreach (var name in new[] { "Light", "Dark", "System" })
             combo.Items.Add(name);
         combo.SelectedIndex = Math.Clamp(_data.Theme, 0, 2);
         combo.SelectionChanged += (_, _) =>
