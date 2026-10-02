@@ -2096,6 +2096,7 @@ public sealed class IslandWindow : Window
         symbol.Margin = new Thickness(6, 0, 0, 0);
         symbol.VerticalAlignment = VerticalAlignment.Center;
         var totalGroup = new StackPanel { Orientation = Orientation.Horizontal, RenderTransformOrigin = new Point(0, 0.5), RenderTransform = _mcResultScale };
+        if (_mcResultText.Parent is Panel oldParent) oldParent.Children.Remove(_mcResultText);
         totalGroup.Children.Add(new TextBlock
         {
             Text = "= ", FontSize = 17, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
