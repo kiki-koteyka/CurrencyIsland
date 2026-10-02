@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
@@ -131,13 +131,45 @@ public static class SelfUpdater
         }
 
         Log("swap done, launching new exe");
-        Process.Start(new ProcessStartInfo
+        Process? launched;
+        try
         {
-            FileName = currentExePath,
-            WorkingDirectory = Path.GetDirectoryName(currentExePath) ?? "",
-            UseShellExecute = true,
-        });
+            launched = Process.Start(new ProcessStartInfo
+            {
+                FileName = currentExePath,
+                WorkingDirectory = Path.GetDirectoryName(currentExePath) ?? "",
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            Log($"launch failed, restoring previous version: {ex}");
+            RestorePrevious(currentExePath, oldPath);
+            throw;
+        }
 
+        if (launched != null && await Task.Run(() => launched.WaitForExit(4000)))
+        {
+            Log($"new exe exited right after start, code={launched.ExitCode}, restoring previous version");
+            RestorePrevious(currentExePath, oldPath);
+            throw new InvalidOperationException("The updated version did not start.");
+        }
+
+        Log($"new exe running, pid={launched?.Id}");
         System.Windows.Application.Current.Shutdown();
+    }
+
+    private static void RestorePrevious(string currentExePath, string oldPath)
+    {
+        try
+        {
+            if (!File.Exists(oldPath)) return;
+            if (File.Exists(currentExePath)) File.Delete(currentExePath);
+            File.Move(oldPath, currentExePath);
+        }
+        catch (Exception ex)
+        {
+            Log($"restore failed: {ex}");
+        }
     }
 }

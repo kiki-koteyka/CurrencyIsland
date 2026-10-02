@@ -1557,10 +1557,18 @@ public sealed class IslandWindow : Window
         _mcInput.Template = bareTemplate;
         _mcInput.PreviewTextInput += (_, e) =>
         {
-            if (e.Text is "+" or "-" or "*" or "/")
+            var typedOperator = e.Text switch
+            {
+                "+" => '+',
+                "-" or "\u2212" => '-',
+                "*" or "x" or "X" or "\u0445" or "\u0425" or "\u00D7" => '*',
+                "/" or ":" or "\u00F7" => '/',
+                _ => '\0'
+            };
+            if (typedOperator != '\0')
             {
                 e.Handled = true;
-                McAddOperator(e.Text[0]);
+                McAddOperator(typedOperator);
                 return;
             }
             if (e.Text == "%")
