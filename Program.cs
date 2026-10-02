@@ -1379,10 +1379,11 @@ public sealed class IslandWindow : Window
 
         if (hasSymbol && row.Children.Count > 1 && row.Children[row.Children.Count - 1] is FrameworkElement symbol)
         {
-            var drop = new TranslateTransform(0, -16);
-            symbol.RenderTransform = drop;
-            drop.BeginAnimation(TranslateTransform.YProperty, Motion.Spring(-16, 0, Motion.Bouncy));
-            symbol.BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 160));
+            var slide = new TranslateTransform(-8, 0);
+            symbol.RenderTransform = slide;
+            var easeOut = new CubicEase { EasingMode = EasingMode.EaseOut };
+            slide.BeginAnimation(TranslateTransform.XProperty, Motion.Tween(-8, 0, 200, easeOut));
+            symbol.BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 200, easeOut));
         }
     }
 
