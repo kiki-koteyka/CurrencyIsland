@@ -1970,6 +1970,11 @@ public sealed class IslandWindow : Window
         _mcResultCurrency = _mcTokens.OfType<McTerm>().FirstOrDefault(t => t.Currency >= 0)?.Currency ?? CalcRubIndex;
         McRebuildTokens();
         McRenderResult();
+        _mcInput.Dispatcher.BeginInvoke(new Action(() =>
+        {
+            _mcInput.Focus();
+            Keyboard.Focus(_mcInput);
+        }), DispatcherPriority.Input);
     }
 
     private void McBackspace()
@@ -2048,7 +2053,8 @@ public sealed class IslandWindow : Window
             else AnimateNewOperator(element);
         }
         _mcTokenPanel.Children.Add(_mcInput);
-        _mcInput.Visibility = _mcShowResult ? Visibility.Collapsed : Visibility.Visible;
+        _mcInput.Visibility = Visibility.Visible;
+        _mcInput.Opacity = _mcShowResult ? 0 : 1;
         McUpdatePlaceholder();
         _mcScroll.Dispatcher.BeginInvoke(new Action(_mcScroll.ScrollToEnd), DispatcherPriority.Loaded);
     }
