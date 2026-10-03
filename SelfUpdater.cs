@@ -148,6 +148,7 @@ public static class SelfUpdater
             launched = Process.Start(new ProcessStartInfo
             {
                 FileName = currentExePath,
+                Arguments = "--updated",
                 WorkingDirectory = Path.GetDirectoryName(currentExePath) ?? "",
                 UseShellExecute = true,
             });

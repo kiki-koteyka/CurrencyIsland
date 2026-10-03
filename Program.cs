@@ -1257,6 +1257,39 @@ public sealed class IslandWindow : Window
 
         _rangePoints = points;
         RenderRangeChart();
+        RevealRangeChart();
+    }
+
+    private void RevealRangeChart()
+    {
+        if (!Motion.Enabled || _rangePoints is not { Count: >= 2 }) return;
+
+        var shift = new TranslateTransform(-0.2, 0);
+        var mask = new LinearGradientBrush(Colors.Black, Colors.Transparent, new Point(0, 0.5), new Point(0.2, 0.5))
+        {
+            RelativeTransform = shift
+        };
+        _rangeCanvas.OpacityMask = mask;
+
+        var sweep = Motion.Tween(-0.2, 1.0, 800, new CubicEase { EasingMode = EasingMode.EaseInOut });
+        sweep.Completed += (_, _) =>
+        {
+            if (ReferenceEquals(_rangeCanvas.OpacityMask, mask)) _rangeCanvas.OpacityMask = null;
+        };
+        shift.BeginAnimation(TranslateTransform.XProperty, sweep);
+
+        var easeOut = new CubicEase { EasingMode = EasingMode.EaseOut };
+        _rangeRateText.BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 320, easeOut));
+        _rangeChangeText.BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 380, easeOut, 80));
+        _rangeEndMarker.BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 220, easeOut, 650));
+
+        Motion.Settle(1500, () =>
+        {
+            if (ReferenceEquals(_rangeCanvas.OpacityMask, mask)) _rangeCanvas.OpacityMask = null;
+            Motion.Clear(_rangeRateText, OpacityProperty, 1.0);
+            Motion.Clear(_rangeChangeText, OpacityProperty, 1.0);
+            Motion.Clear(_rangeEndMarker, OpacityProperty, 1.0);
+        });
     }
 
     private void RenderRangeChart()
@@ -4028,6 +4061,7 @@ public sealed class App : Application
     private string _pendingUpdateReleaseUrl = "";
     private System.Threading.CancellationTokenSource? _updateCts;
     private bool _updateApplying;
+    private System.Threading.Mutex? _instanceMutex;
 
     [STAThread]
     public static void Main()
@@ -4040,6 +4074,13 @@ public sealed class App : Application
     {
         base.OnStartup(e);
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
+        if (!AcquireSingleInstance(e.Args.Contains("--updated")))
+        {
+            SelfUpdater.Log("another instance is already running, exiting");
+            Shutdown();
+            return;
+        }
 
         // The actual root cause of the black settings window: this app has no
         // App.xaml, so the Wpf.Ui theme/control resource dictionaries that a
@@ -4235,6 +4276,19 @@ public sealed class App : Application
         _settingsWindow.Show();
     }
 
+    private bool AcquireSingleInstance(bool afterUpdate)
+    {
+        _instanceMutex = new System.Threading.Mutex(false, @"Local\CurrencyIsland.SingleInstance");
+        try
+        {
+            return _instanceMutex.WaitOne(afterUpdate ? TimeSpan.FromSeconds(20) : TimeSpan.Zero);
+        }
+        catch (System.Threading.AbandonedMutexException)
+        {
+            return true;
+        }
+    }
+
     private void OnUserPreferenceChanged(object? sender, Microsoft.Win32.UserPreferenceChangedEventArgs e)
     {
         if (e.Category != Microsoft.Win32.UserPreferenceCategory.General) return;
@@ -4247,8 +4301,12 @@ public sealed class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
-        _trayIcon!.Visible = false;
-        _trayIcon.Dispose();
+        if (_trayIcon != null)
+        {
+            _trayIcon.Visible = false;
+            _trayIcon.Dispose();
+        }
+        try { _instanceMutex?.ReleaseMutex(); } catch { }
         base.OnExit(e);
     }
 
