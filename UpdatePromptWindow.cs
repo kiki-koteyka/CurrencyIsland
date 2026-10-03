@@ -255,7 +255,7 @@ public sealed class UpdatePromptWindow : FluentWindow
         {
             CornerRadius = new CornerRadius(8),
             Background = Brush(Color.FromArgb(40, _p.Accent.R, _p.Accent.G, _p.Accent.B)),
-            Padding = new Thickness(12, 5, 12, 5),
+            Padding = new Thickness(12, 6.5, 12, 3.5),
             HorizontalAlignment = HorizontalAlignment.Left,
             Margin = new Thickness(0, 14, 0, 12)
         };
