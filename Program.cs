@@ -4089,6 +4089,7 @@ public sealed class App : Application
 
         _trayIcon.ContextMenuStrip = menu;
         _trayIcon.DoubleClick += (_, _) => _window?.ToggleForcedVisibility();
+        Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
 
         CheckForUpdatesInBackground();
 
@@ -4234,23 +4235,88 @@ public sealed class App : Application
         _settingsWindow.Show();
     }
 
+    private void OnUserPreferenceChanged(object? sender, Microsoft.Win32.UserPreferenceChangedEventArgs e)
+    {
+        if (e.Category != Microsoft.Win32.UserPreferenceCategory.General) return;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_trayIcon != null) _trayIcon.Icon = BuildTrayIcon();
+        }));
+    }
+
     protected override void OnExit(ExitEventArgs e)
     {
+        Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
         _trayIcon!.Visible = false;
         _trayIcon.Dispose();
         base.OnExit(e);
     }
 
+    private static bool IsTaskbarLight()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            return key?.GetValue("SystemUsesLightTheme") is int value && value == 1;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static Drawing.Icon BuildTrayIcon()
     {
-        using var bmp = new Drawing.Bitmap(32, 32);
-        using (var g = Drawing.Graphics.FromImage(bmp))
+        var size = Math.Max(16, Forms.SystemInformation.SmallIconSize.Width);
+        var light = IsTaskbarLight();
+        var red = light ? 20 / 255f : 1f;
+        var green = light ? 24 / 255f : 1f;
+        var blue = light ? 26 / 255f : 1f;
+
+        using var stream = System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("logo.png")!;
+        using var memory = new System.IO.MemoryStream();
+        stream.CopyTo(memory);
+        memory.Position = 0;
+        using var source = new Drawing.Bitmap(memory);
+
+        const int scale = 4;
+        var big = size * scale;
+        var bold = (size <= 16 ? 0.30f : size <= 20 ? 0.25f : size <= 24 ? 0.20f : 0.15f) * scale;
+        using var tinted = new Drawing.Bitmap(big, big, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        using (var g = Drawing.Graphics.FromImage(tinted))
         {
-            g.Clear(Drawing.Color.Transparent);
-            using var brush = new Drawing.SolidBrush(Drawing.Color.FromArgb(255, 18, 18, 20));
-            g.FillEllipse(brush, 2, 2, 28, 28);
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            var matrix = new System.Drawing.Imaging.ColorMatrix(new[]
+            {
+                new float[] { 0, 0, 0, 0, 0 },
+                new float[] { 0, 0, 0, 0, 0 },
+                new float[] { 0, 0, 0, 0, 0 },
+                new float[] { 0, 0, 0, 1, 0 },
+                new[] { red, green, blue, 0, 1 }
+            });
+            using var attributes = new System.Drawing.Imaging.ImageAttributes();
+            attributes.SetColorMatrix(matrix);
+            var pad = big / 64f;
+            var box = big - pad * 2;
+            for (var i = 0; i < 8; i++)
+            {
+                var angle = i / 8.0 * Math.PI * 2;
+                var rect = new Drawing.RectangleF(pad + (float)Math.Cos(angle) * bold, pad + (float)Math.Sin(angle) * bold, box, box);
+                g.DrawImage(source, Drawing.Rectangle.Round(rect), 0, 0, source.Width, source.Height, Drawing.GraphicsUnit.Pixel, attributes);
+            }
+            g.DrawImage(source, Drawing.Rectangle.Round(new Drawing.RectangleF(pad, pad, box, box)), 0, 0, source.Width, source.Height, Drawing.GraphicsUnit.Pixel, attributes);
         }
-        var hIcon = bmp.GetHicon();
+
+        using var small = new Drawing.Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        using (var g = Drawing.Graphics.FromImage(small))
+        {
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            g.DrawImage(tinted, 0, 0, size, size);
+        }
+
+        var hIcon = small.GetHicon();
         return Drawing.Icon.FromHandle(hIcon);
     }
 }
