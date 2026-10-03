@@ -65,27 +65,9 @@ public sealed class UpdatePromptWindow : FluentWindow
         var root = new Grid { Background = Brush(_p.Surface) };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        var titleBar = new TitleBar { Title = "Currency Island", ShowMaximize = false, ShowMinimize = false, ShowClose = false, Foreground = Brush(_p.Ink2) };
+        var titleBar = new TitleBar { Title = "Currency Island", ShowMaximize = false, ShowMinimize = false, ShowClose = true, Foreground = Brush(_p.Ink2), ButtonsForeground = Brush(_p.Ink2) };
         Grid.SetRow(titleBar, 0);
         root.Children.Add(titleBar);
-
-        var closeGlyph = new System.Windows.Shapes.Path
-        {
-            Data = Geometry.Parse("M0,0 L10,10 M10,0 L0,10"),
-            Stroke = Brush(_p.Ink2), StrokeThickness = 1.2,
-            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
-        };
-        var closeButton = new Border
-        {
-            Width = 46, Height = 32, Background = Brushes.Transparent, Cursor = Cursors.Arrow,
-            HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top,
-            Child = closeGlyph
-        };
-        closeButton.MouseEnter += (_, _) => closeButton.Background = Brush(_p.Soft);
-        closeButton.MouseLeave += (_, _) => closeButton.Background = Brushes.Transparent;
-        closeButton.MouseLeftButtonUp += (_, _) => Close();
-        Grid.SetRow(closeButton, 0);
-        root.Children.Add(closeButton);
 
         _availablePanel = BuildAvailable(urgent, notes, assetSize, published);
 
