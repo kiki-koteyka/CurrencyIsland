@@ -253,25 +253,39 @@ public sealed class UpdatePromptWindow : FluentWindow
 
         var pill = new Border
         {
-            CornerRadius = new CornerRadius(99),
+            CornerRadius = new CornerRadius(8),
             Background = Brush(Color.FromArgb(40, _p.Accent.R, _p.Accent.G, _p.Accent.B)),
-            Padding = new Thickness(11, 3, 11, 3),
+            Padding = new Thickness(12, 5, 12, 5),
             HorizontalAlignment = HorizontalAlignment.Left,
             Margin = new Thickness(0, 14, 0, 12)
         };
-        var pillText = new TextBlock { FontFamily = new FontFamily("Consolas"), FontSize = 12, Foreground = Brush(_p.Ink) };
-        pillText.Inlines.Add(new System.Windows.Documents.Run(AppVersion.Current + " → "));
-        pillText.Inlines.Add(new System.Windows.Documents.Run(_version) { FontWeight = FontWeights.Bold });
-        pill.Child = pillText;
+        var pillRow = new StackPanel { Orientation = Orientation.Horizontal };
+        var oldVersion = Text(AppVersion.Current, 12.5, _p.Ink2, FontWeights.Normal, "Consolas");
+        var arrow = Text("→", 12.5, _p.Ink2, FontWeights.Normal, "Segoe UI Symbol");
+        arrow.Margin = new Thickness(9, 0, 9, 0);
+        var newVersion = Text(_version, 12.5, _p.Ink, FontWeights.Bold, "Consolas");
+        pillRow.Children.Add(oldVersion);
+        pillRow.Children.Add(arrow);
+        pillRow.Children.Add(newVersion);
+        pill.Child = pillRow;
         Grid.SetRow(pill, 1);
         grid.Children.Add(pill);
 
         var list = new StackPanel();
         var lines = new List<string>();
+        var bulleted = false;
         foreach (var raw in notes.Replace("\r", "").Split('\n'))
         {
             var line = raw.Trim();
-            if (line.StartsWith('•')) line = line[1..].Trim();
+            if (line.StartsWith('•'))
+            {
+                bulleted = true;
+                line = line[1..].Trim();
+            }
+            else if (bulleted || notes.Contains('•'))
+            {
+                continue;
+            }
             if (line.Length > 0) lines.Add(line);
         }
 
@@ -384,22 +398,26 @@ public sealed class UpdatePromptWindow : FluentWindow
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-        var tile = new Border
+        UIElement tile;
+        if (tileColor is { } bad)
         {
-            Width = 48, Height = 48, CornerRadius = new CornerRadius(13),
-            Background = tileColor is { } bad ? Brush(bad) : Brush(Color.FromRgb(16, 16, 18))
-        };
-        if (tileColor != null)
-        {
-            tile.Child = new TextBlock
+            tile = new Border
             {
-                Text = "!", FontSize = 24, FontWeight = FontWeights.Bold, Foreground = Brushes.White,
-                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
+                Width = 52, Height = 52, CornerRadius = new CornerRadius(14), Background = Brush(bad),
+                Child = new TextBlock
+                {
+                    Text = "!", FontSize = 26, FontWeight = FontWeights.Bold, Foreground = Brushes.White,
+                    HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
+                }
             };
         }
         else
         {
-            tile.Child = new Image { Source = FoxProgress.Logo, Width = 38, Height = 38, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            var mask = new ImageBrush(FoxProgress.Logo) { Stretch = Stretch.Uniform };
+            mask.Freeze();
+            var fox = new Rectangle { Width = 52, Height = 52, Fill = Brush(_p.Ink), OpacityMask = mask, UseLayoutRounding = false, SnapsToDevicePixels = false };
+            RenderOptions.SetBitmapScalingMode(fox, BitmapScalingMode.HighQuality);
+            tile = fox;
         }
 
         var texts = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(14, 0, 0, 0) };
