@@ -72,16 +72,17 @@ public sealed class UpdatePromptWindow : FluentWindow
         _availablePanel = BuildAvailable(urgent, notes, assetSize, published);
 
         _fox = new FoxProgress(Brush(_p.Soft), Brush(_p.Accent));
-        _percentNumber = Text("0", 40, _p.Ink, FontWeights.SemiBold, "Segoe UI Variable Display, Segoe UI");
-        _percentSign = Text("%", 18, _p.Ink2, FontWeights.Normal);
-        _percentSign.Margin = new Thickness(2, 0, 0, 7);
+        _percentNumber = Text("0", 58, _p.Ink, FontWeights.SemiBold, "Segoe UI Variable Display, Segoe UI");
+        _percentSign = Text("%", 24, _p.Ink2, FontWeights.Normal);
+        _percentSign.Margin = new Thickness(3, 0, 0, 10);
         _percentSign.VerticalAlignment = VerticalAlignment.Bottom;
-        _percentRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 4) };
+        _percentRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 8) };
         _percentRow.Children.Add(_percentNumber);
         _percentRow.Children.Add(_percentSign);
-        _detailText = Text("", 12, _p.Ink2, FontWeights.Normal, "Consolas");
-        _speedText = Text("", 12, _p.Ink2, FontWeights.Normal, "Consolas");
-        _stageText = Text("", 18, _p.Ink, FontWeights.SemiBold, "Segoe UI Variable Display, Segoe UI");
+        _detailText = Text("", 13.5, _p.Ink2, FontWeights.Normal, "Consolas");
+        _speedText = Text("", 13.5, _p.Ink2, FontWeights.Normal, "Consolas");
+        _speedText.Margin = new Thickness(0, 4, 0, 0);
+        _stageText = Text("", 24, _p.Ink, FontWeights.SemiBold, "Segoe UI Variable Display, Segoe UI");
         _stageText.Visibility = Visibility.Collapsed;
         _stageText.TextWrapping = TextWrapping.Wrap;
         _stageText.Margin = new Thickness(0, 6, 0, 6);
@@ -317,14 +318,15 @@ public sealed class UpdatePromptWindow : FluentWindow
         content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-        var info = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(20, 0, 0, 0) };
-        info.Children.Add(Text("Updating to " + _version, 16, _p.Ink, FontWeights.SemiBold));
+        var info = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(22, 0, 0, 0) };
+        info.Children.Add(Text("Updating to " + _version, 18, _p.Ink, FontWeights.SemiBold));
         info.Children.Add(_percentRow);
         info.Children.Add(_stageText);
         info.Children.Add(_detailText);
         info.Children.Add(_speedText);
         Grid.SetColumn(info, 1);
-        content.Children.Add(_fox);
+        var foxBox = new Viewbox { Width = 176, Height = 176, Child = _fox, Stretch = Stretch.Uniform };
+        content.Children.Add(foxBox);
         content.Children.Add(info);
         Grid.SetRow(content, 0);
         grid.Children.Add(content);
