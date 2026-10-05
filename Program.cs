@@ -2237,7 +2237,7 @@ public sealed class IslandWindow : Window
         };
     }
 
-    private static readonly int[] AllCurrencies = { 0, 1, 2, 3, 4 };
+    private static readonly int[] AllCurrencies = { 0, 1, 2, 3, 5, 4 };
     private static readonly int[] SwapperCurrencies = { 0, 1, 2, 3, 5, 4 };
     private static readonly int[] ChartCurrencies = { 0, 1, 2, 3, 5 };
 
