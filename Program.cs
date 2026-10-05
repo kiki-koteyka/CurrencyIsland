@@ -4093,7 +4093,7 @@ public sealed class App : Application
         base.OnStartup(e);
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
-        if (!AcquireSingleInstance(e.Args.Contains("--updated")))
+        if (!e.Args.Contains("--allow-multiple") && !AcquireSingleInstance(e.Args.Contains("--updated")))
         {
             SelfUpdater.Log("another instance is already running, exiting");
             Shutdown();
