@@ -872,9 +872,9 @@ public sealed class IslandWindow : Window
     // Currency codes/symbols/accents for the calculator's two selector
     // chips - RUB is the base currency, so it always converts 1:1 and
     // never gets its own trend chart (see LoadCalcRangeAsync).
-    private static readonly string[] CalcCodes = { "USD", "EUR", "CNY", "AED", "RUB" };
-    private static readonly string[] CalcSymbols = { "$", "€", "¥", "Dh", "₽" };
-    private Color CalcAccent(int i) => i switch { 0 => UsdAccent, 1 => EurAccent, 2 => CnyAccent, 3 => AedAccent, _ => Colors.White };
+    private static readonly string[] CalcCodes = { "USD", "EUR", "CNY", "AED", "RUB", "TRY" };
+    private static readonly string[] CalcSymbols = { "$", "€", "¥", "Dh", "₽", "₺" };
+    private Color CalcAccent(int i) => i switch { 0 => UsdAccent, 1 => EurAccent, 2 => CnyAccent, 3 => AedAccent, 5 => TryAccent, _ => Colors.White };
 
     private int _calcFromCurrency;
     private const int CalcRubIndex = 4;
@@ -947,7 +947,7 @@ public sealed class IslandWindow : Window
         });
         Grid.SetColumn(_calcAmountBox, 0);
         amountRow.Children.Add(_calcAmountBox);
-        var fromChip = BuildCurrencyChip(AllCurrencies, _calcFromCurrency, c => { _calcFromCurrency = c; RecalculateCalculator(); }, out _calcFromRefresh);
+        var fromChip = BuildCurrencyChip(SwapperCurrencies, _calcFromCurrency, c => { _calcFromCurrency = c; RecalculateCalculator(); }, out _calcFromRefresh);
         _calcFromChip = fromChip;
         Grid.SetColumn(fromChip, 1);
         amountRow.Children.Add(fromChip);
@@ -1054,7 +1054,7 @@ public sealed class IslandWindow : Window
         copyButton.MouseLeftButtonUp += (_, e) => { e.Handled = true; CopyCalcResult(); };
         Grid.SetColumn(copyButton, 1);
         resultRow.Children.Add(copyButton);
-        var toChip = BuildCurrencyChip(AllCurrencies, _calcToCurrency, c => { _calcToCurrency = c; RecalculateCalculator(); }, out _calcToRefresh);
+        var toChip = BuildCurrencyChip(SwapperCurrencies, _calcToCurrency, c => { _calcToCurrency = c; RecalculateCalculator(); }, out _calcToRefresh);
         _calcToChip = toChip;
         Grid.SetColumn(toChip, 2);
         resultRow.Children.Add(toChip);
@@ -2194,6 +2194,7 @@ public sealed class IslandWindow : Window
     }
 
     private const int AedIndex = 3;
+    private const int TryIndex = 5;
 
     private FrameworkElement CurrencySymbol(int currency)
     {
@@ -2213,6 +2214,20 @@ public sealed class IslandWindow : Window
             };
         }
 
+        if (currency == TryIndex)
+        {
+            return new ShapePath
+            {
+                Data = Geometry.Parse("M6.5,0.5 L7.969,4.478 L12.206,4.646 L8.878,7.273 L10.027,11.354 L6.5,9 L2.973,11.354 L4.122,7.273 L0.794,4.646 L5.031,4.478 Z"),
+                Fill = accent,
+                Stroke = accent,
+                StrokeThickness = 0.7,
+                StrokeLineJoin = PenLineJoin.Round,
+                Stretch = Stretch.Uniform,
+                Width = 11.5, Height = 11.5
+            };
+        }
+
         return new TextBlock
         {
             Text = CalcSymbols[currency],
@@ -2223,7 +2238,8 @@ public sealed class IslandWindow : Window
     }
 
     private static readonly int[] AllCurrencies = { 0, 1, 2, 3, 4 };
-    private static readonly int[] ChartCurrencies = { 0, 1, 2, 3 };
+    private static readonly int[] SwapperCurrencies = { 0, 1, 2, 3, 5, 4 };
+    private static readonly int[] ChartCurrencies = { 0, 1, 2, 3, 5 };
 
     private Border BuildCurrencyChip(IReadOnlyList<int> options, int initial, Action<int> onPick, out Action<int> refresh)
     {
@@ -2585,6 +2601,7 @@ public sealed class IslandWindow : Window
         1 => _calcLatest?.EurRub ?? 0,
         2 => _calcLatest?.CnyRub ?? 0,
         3 => _calcLatest?.AedRub ?? 0,
+        5 => _calcLatest?.TryRub ?? 0,
         _ => 1
     };
 
@@ -2969,6 +2986,7 @@ public sealed class IslandWindow : Window
     private static readonly Color EurAccent = Color.FromRgb(0x5A, 0xC8, 0xFA);
     private static readonly Color CnyAccent = Color.FromRgb(0xFF, 0xD1, 0x66);
     private static readonly Color AedAccent = Color.FromRgb(0xC3, 0x9B, 0xFF);
+    private static readonly Color TryAccent = Color.FromRgb(0xFF, 0x4D, 0x5E);
     private static readonly Color TrendUpColor = Color.FromRgb(0x30, 0xD1, 0x58);
     private static readonly Color TrendDownColor = Color.FromRgb(0xFF, 0x45, 0x3A);
 
