@@ -71,7 +71,12 @@ public sealed class IslandWindow : Window
     private readonly ContentControl _tabHost = new();
     private readonly Ellipse[] _dots = new Ellipse[TabCount];
     private readonly FrameworkElement[] _tabViews = new FrameworkElement[TabCount];
-    private readonly CbrRatesProvider _rates = new();
+    private readonly CbrRatesProvider _cbrSource = new();
+    private readonly CbrtRatesProvider _cbrtSource = new();
+    private IRatesSource _rates = null!;
+    private readonly Dictionary<CentralBank, (DateTime At, List<CbrHistoryPoint> Points)> _historyByBank = new();
+    private int BaseIndex => _rates.BaseIndex;
+    private string BaseSign => _rates.BaseSign;
     private const int TableDays = 3;
     private readonly TextBlock[] _tableHeaderTexts = new TextBlock[TableDays];
     private readonly TextBlock[] _usdValueTexts = new TextBlock[TableDays];
@@ -125,6 +130,9 @@ public sealed class IslandWindow : Window
         _stateFile = Path.Combine(folder, "position.json");
         LoadPosition();
         var startupSettings = AppSettings.Load();
+        _rates = startupSettings.CentralBank == (int)CentralBank.Turkey ? _cbrtSource : _cbrSource;
+        _calcToCurrency = BaseIndex;
+        _mcResultCurrency = BaseIndex;
         _chartCrosshairHover = startupSettings.ChartCrosshairHover;
         _pinned = startupSettings.Pinned;
         Motion.Enabled = startupSettings.Animations;
@@ -452,6 +460,119 @@ public sealed class IslandWindow : Window
     // column, and the two value columns are headed by the actual dates they
     // cover (not "Вчера"/"Сегодня") - so it doubles as the "as of" date this
     // used to show in a separate footer line, without spending extra rows.
+    private TextBlock _bankCaptionText = null!;
+    private ContentControl _bankCaptionFlag = null!;
+
+    private readonly List<(ContentControl Flag, TextBlock Name)> _bankChips = new();
+
+    private Border BuildBankChip()
+    {
+        var flag = new ContentControl { VerticalAlignment = VerticalAlignment.Center, IsTabStop = false };
+        var name = new TextBlock
+        {
+            FontSize = 10, FontFamily = LabelFont, Foreground = new SolidColorBrush(Color.FromArgb(170, 235, 235, 240)),
+            Margin = new Thickness(5, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center
+        };
+        var swap = new ShapePath
+        {
+            Data = Geometry.Parse("M1,3 L8,3 M6,1 L8,3 L6,5 M8,7 L1,7 M3,5 L1,7 L3,9"),
+            Stroke = new SolidColorBrush(Color.FromArgb(150, 235, 235, 240)), StrokeThickness = 1.1,
+            StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, StrokeLineJoin = PenLineJoin.Round,
+            Width = 9, Height = 10, VerticalAlignment = VerticalAlignment.Center
+        };
+        var row = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        row.Children.Add(flag);
+        row.Children.Add(name);
+        row.Children.Add(swap);
+        var chip = new Border
+        {
+            CornerRadius = new CornerRadius(9),
+            Padding = new Thickness(5, 3, 7, 3),
+            Background = new SolidColorBrush(Color.FromArgb(22, 255, 255, 255)),
+            Cursor = Cursors.Hand,
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = row
+        };
+        chip.MouseEnter += (_, _) => chip.Background = new SolidColorBrush(Color.FromArgb(46, 255, 255, 255));
+        chip.MouseLeave += (_, _) => chip.Background = new SolidColorBrush(Color.FromArgb(22, 255, 255, 255));
+        chip.PreviewMouseDown += (_, e) => e.Handled = true;
+        chip.MouseLeftButtonUp += (_, e) => { e.Handled = true; SwitchCentralBank(); };
+        flag.Content = BuildFlag(_rates.Bank);
+        name.Text = _rates.Name;
+        _bankChips.Add((flag, name));
+        return chip;
+    }
+
+    private void RefreshBankIndicators()
+    {
+        foreach (var (flag, name) in _bankChips)
+        {
+            flag.Content = BuildFlag(_rates.Bank);
+            name.Text = _rates.Name;
+        }
+        if (_bankCaptionText == null) return;
+        _bankCaptionText.Text = $"{_rates.Name} rate on";
+        _bankCaptionFlag.Content = BuildFlag(_rates.Bank);
+        if (_collapsedIcon != null)
+        {
+            _collapsedIcon.Content = BuildCollapsedIcon(_currentTab);
+            FitCollapsedPillWidth();
+        }
+    }
+
+    private static string StarData(double cx, double cy, double outer, double inner)
+    {
+        var sb = new System.Text.StringBuilder();
+        for (var i = 0; i < 10; i++)
+        {
+            var radius = i % 2 == 0 ? outer : inner;
+            var angle = -Math.PI / 2 + i * Math.PI / 5;
+            sb.Append(i == 0 ? 'M' : 'L').Append((cx + radius * Math.Cos(angle)).ToString("0.###", CultureInfo.InvariantCulture)).Append(',')
+              .Append((cy + radius * Math.Sin(angle)).ToString("0.###", CultureInfo.InvariantCulture)).Append(' ');
+        }
+        return sb.Append('Z').ToString();
+    }
+
+    private static FrameworkElement BuildFlag(CentralBank bank)
+    {
+        var root = new Grid { Width = 20, Height = 14, Clip = new RectangleGeometry(new Rect(0, 0, 20, 14), 3, 3) };
+        if (bank == CentralBank.Russia)
+        {
+            root.RowDefinitions.Add(new RowDefinition());
+            root.RowDefinitions.Add(new RowDefinition());
+            root.RowDefinitions.Add(new RowDefinition());
+            var colors = new[] { Color.FromRgb(255, 255, 255), Color.FromRgb(0x1C, 0x57, 0xA5), Color.FromRgb(0xD5, 0x2B, 0x1E) };
+            for (var i = 0; i < 3; i++)
+            {
+                var stripe = new Border { Background = new SolidColorBrush(colors[i]) };
+                Grid.SetRow(stripe, i);
+                root.Children.Add(stripe);
+            }
+        }
+        else
+        {
+            root.Background = new SolidColorBrush(Color.FromRgb(0xE3, 0x0A, 0x17));
+            var canvas = new Canvas { Width = 20, Height = 14 };
+            var crescent = new ShapePath
+            {
+                Data = new CombinedGeometry(GeometryCombineMode.Exclude,
+                    new EllipseGeometry(new Point(7.4, 7), 4.1, 4.1),
+                    new EllipseGeometry(new Point(8.7, 7), 3.3, 3.3)),
+                Fill = Brushes.White
+            };
+            var star = new ShapePath { Data = Geometry.Parse(StarData(12.4, 7, 2.3, 0.95)), Fill = Brushes.White };
+            canvas.Children.Add(crescent);
+            canvas.Children.Add(star);
+            root.Children.Add(canvas);
+        }
+        return new Border
+        {
+            Width = 20, Height = 14, CornerRadius = new CornerRadius(3),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(70, 255, 255, 255)), BorderThickness = new Thickness(0.8),
+            Child = root, SnapsToDevicePixels = false
+        };
+    }
+
     private FrameworkElement BuildRatesView()
     {
         // Top-anchored, not centered - the settings gear is a fixed 26px
@@ -466,14 +587,43 @@ public sealed class IslandWindow : Window
         for (var i = 0; i < 4; i++) grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
         var dimHeader = new SolidColorBrush(Color.FromArgb(120, 235, 235, 240));
-        var captionText = new TextBlock
+        _bankCaptionText = new TextBlock
         {
-            Text = "CBR rate on", FontSize = 10, FontFamily = LabelFont, Foreground = dimHeader,
-            VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 3)
+            FontSize = 10, FontFamily = LabelFont, Foreground = dimHeader,
+            Margin = new Thickness(6, 0, 5, 0), VerticalAlignment = VerticalAlignment.Center
         };
-        Grid.SetRow(captionText, 0);
-        Grid.SetColumn(captionText, 0);
-        grid.Children.Add(captionText);
+        _bankCaptionFlag = new ContentControl { VerticalAlignment = VerticalAlignment.Center, IsTabStop = false };
+        var swapGlyph = new ShapePath
+        {
+            Data = Geometry.Parse("M1,3 L8,3 M6,1 L8,3 L6,5 M8,7 L1,7 M3,5 L1,7 L3,9"),
+            Stroke = dimHeader, StrokeThickness = 1.1,
+            StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, StrokeLineJoin = PenLineJoin.Round,
+            Width = 9, Height = 10, VerticalAlignment = VerticalAlignment.Center
+        };
+        var captionRow = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        captionRow.Children.Add(_bankCaptionFlag);
+        captionRow.Children.Add(_bankCaptionText);
+        captionRow.Children.Add(swapGlyph);
+        var captionChip = new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(5, 2, 7, 2),
+            Margin = new Thickness(-5, 0, 0, 1),
+            Background = Brushes.Transparent,
+            Cursor = Cursors.Hand,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Child = captionRow
+        };
+        captionChip.MouseEnter += (_, _) => captionChip.Background = new SolidColorBrush(Color.FromArgb(34, 255, 255, 255));
+        captionChip.MouseLeave += (_, _) => captionChip.Background = Brushes.Transparent;
+        captionChip.PreviewMouseDown += (_, e) => e.Handled = true;
+        captionChip.MouseLeftButtonUp += (_, e) => { e.Handled = true; SwitchCentralBank(); };
+        Grid.SetRow(captionChip, 0);
+        Grid.SetColumn(captionChip, 0);
+        Grid.SetColumnSpan(captionChip, 2);
+        grid.Children.Add(captionChip);
+        RefreshBankIndicators();
 
         for (var d = 0; d < TableDays; d++)
         {
@@ -539,12 +689,52 @@ public sealed class IslandWindow : Window
     {
         if (DateTime.UtcNow - _historyFetchedAt < CurrencyCacheLifetime) return;
 
-        var points = await _rates.FetchHistoryAsync(ChartDays);
-        if (points.Count == 0) return;
+        var source = _rates;
+        var points = await source.FetchHistoryAsync(ChartDays);
+        if (points.Count == 0 || !ReferenceEquals(source, _rates)) return;
 
         _historyFetchedAt = DateTime.UtcNow;
         _latestHistory = points;
+        _historyByBank[source.Bank] = (_historyFetchedAt, points);
         ApplyHistoryToViews();
+    }
+
+    private void SwitchCentralBank()
+    {
+        SetCentralBank(_rates.Bank == CentralBank.Russia ? CentralBank.Turkey : CentralBank.Russia, persist: true);
+    }
+
+    private void SetCentralBank(CentralBank bank, bool persist)
+    {
+        var previousBase = _rates.BaseIndex;
+        _rates = bank == CentralBank.Turkey ? _cbrtSource : _cbrSource;
+        if (persist) AppSettings.Update(d => d.CentralBank = (int)bank);
+
+        if (_calcToCurrency == previousBase) _calcToCurrency = BaseIndex;
+        if (_calcFromCurrency == BaseIndex && _calcFromCurrency == _calcToCurrency) _calcFromCurrency = 0;
+        if (_mcResultCurrency == previousBase) _mcResultCurrency = BaseIndex;
+        if (_rangeCurrency == BaseIndex) _rangeCurrency = 0;
+
+        if (_historyByBank.TryGetValue(bank, out var cached))
+        {
+            _historyFetchedAt = cached.At;
+            _latestHistory = cached.Points;
+        }
+        else
+        {
+            _historyFetchedAt = DateTime.MinValue;
+            _latestHistory = null;
+        }
+
+        RefreshBankIndicators();
+        if (_latestHistory != null) ApplyHistoryToViews();
+        _rangePoints = null;
+        RefreshHistoryIfStale();
+        if (_currentTab == RangeTabIndex) _ = LoadRangeAsync();
+        if (_calcFromRefresh != null) { _calcFromRefresh(_calcFromCurrency); _calcToRefresh?.Invoke(_calcToCurrency); }
+        _rangeChipRefresh?.Invoke(_rangeCurrency);
+        RecalculateCalculator();
+        McRenderResult();
     }
 
     private void ApplyHistoryToViews()
@@ -647,8 +837,17 @@ public sealed class IslandWindow : Window
         AddLegendItem(legend, "USD", UsdAccent);
         AddLegendItem(legend, "EUR", EurAccent);
         AddLegendItem(legend, "CNY", CnyAccent);
-        Grid.SetRow(legend, 0);
-        root.Children.Add(legend);
+        var legendRow = new Grid();
+        legendRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        legendRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        legend.VerticalAlignment = VerticalAlignment.Center;
+        legendRow.Children.Add(legend);
+        var chartBankChip = BuildBankChip();
+        chartBankChip.Margin = new Thickness(0, -3, 0, 4);
+        Grid.SetColumn(chartBankChip, 1);
+        legendRow.Children.Add(chartBankChip);
+        Grid.SetRow(legendRow, 0);
+        root.Children.Add(legendRow);
 
         var canvas = new Canvas { Width = ChartWidth, Height = ChartHeight, ClipToBounds = false, Background = Brushes.Transparent };
         _chartCanvas = canvas;
@@ -877,8 +1076,7 @@ public sealed class IslandWindow : Window
     private Color CalcAccent(int i) => i switch { 0 => UsdAccent, 1 => EurAccent, 2 => CnyAccent, 3 => AedAccent, 5 => TryAccent, _ => Colors.White };
 
     private int _calcFromCurrency;
-    private const int CalcRubIndex = 4;
-    private int _calcToCurrency = CalcRubIndex;
+    private int _calcToCurrency = 4;
     private CbrHistoryPoint? _calcLatest;
     private TextBox _calcAmountBox = null!;
     private TextBlock _calcResultText = null!;
@@ -1067,7 +1265,16 @@ public sealed class IslandWindow : Window
             FontSize = 11, FontFamily = LabelFont, Foreground = new SolidColorBrush(Color.FromArgb(190, 235, 235, 240)),
             Margin = new Thickness(2, 0, 0, 1)
         };
-        cardContent.Children.Add(_calcRateText);
+        var rateLine = new Grid();
+        rateLine.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        rateLine.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        _calcRateText.VerticalAlignment = VerticalAlignment.Center;
+        rateLine.Children.Add(_calcRateText);
+        var swapperBankChip = BuildBankChip();
+        swapperBankChip.Margin = new Thickness(0, 0, 0, 0);
+        Grid.SetColumn(swapperBankChip, 1);
+        rateLine.Children.Add(swapperBankChip);
+        cardContent.Children.Add(rateLine);
 
         root.Children.Add(card);
         return root;
@@ -1103,7 +1310,7 @@ public sealed class IslandWindow : Window
         var header = new Grid { Margin = new Thickness(0, 0, 0, 6) };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var chip = BuildCurrencyChip(ChartCurrencies, _rangeCurrency, c => { _rangeCurrency = c; _ = LoadRangeAsync(); }, out _rangeChipRefresh);
+        var chip = BuildCurrencyChip(ChartCurrencies, _rangeCurrency, c => { _rangeCurrency = c; _ = LoadRangeAsync(); }, out _rangeChipRefresh, c => c != BaseIndex);
         chip.HorizontalAlignment = HorizontalAlignment.Left;
         Grid.SetColumn(chip, 0);
         header.Children.Add(chip);
@@ -1138,7 +1345,14 @@ public sealed class IslandWindow : Window
         };
         rateRow.Children.Add(_rangeRateText);
         rateRow.Children.Add(_rangeChangeText);
-        root.Children.Add(rateRow);
+        var rateGrid = new Grid();
+        rateGrid.Children.Add(rateRow);
+        var rangeBankChip = BuildBankChip();
+        rangeBankChip.HorizontalAlignment = HorizontalAlignment.Right;
+        rangeBankChip.VerticalAlignment = VerticalAlignment.Bottom;
+        rangeBankChip.Margin = new Thickness(0, 0, 0, 3);
+        rateGrid.Children.Add(rangeBankChip);
+        root.Children.Add(rateGrid);
 
         var chartHost = new Grid { Height = RangeChartHeight, Width = RangeChartWidth, HorizontalAlignment = HorizontalAlignment.Left };
         _rangeCanvas = new Canvas { Width = RangeChartWidth, Height = RangeChartHeight, Background = Brushes.Transparent };
@@ -1251,9 +1465,10 @@ public sealed class IslandWindow : Window
 
         var to = DateTime.Today;
         var from = to.AddDays(requestedYear ? -365 : -30);
-        var points = await _rates.FetchDynamicRangeAsync(CalcCodes[requestedCurrency], from, to);
+        var source = _rates;
+        var points = await source.FetchDynamicRangeAsync(CalcCodes[requestedCurrency], from, to);
 
-        if (requestedCurrency != _rangeCurrency || requestedYear != _rangeIsYear) return;
+        if (requestedCurrency != _rangeCurrency || requestedYear != _rangeIsYear || !ReferenceEquals(source, _rates)) return;
 
         _rangePoints = points;
         RenderRangeChart();
@@ -1347,8 +1562,8 @@ public sealed class IslandWindow : Window
         var delta = points[^1].Rate - points[0].Rate;
         var deltaPct = points[0].Rate == 0 ? 0 : delta / points[0].Rate * 100;
         var arrow = delta >= 0 ? "▲" : "▼";
-        _rangeRateText.Text = $"{points[^1].Rate:0.00} ₽";
-        _rangeChangeText.Text = $"{arrow} {delta:+0.00;-0.00} ₽  {deltaPct:+0.0;-0.0}% past {(_rangeIsYear ? "year" : "month")}";
+        _rangeRateText.Text = $"{points[^1].Rate:0.00} {BaseSign}";
+        _rangeChangeText.Text = $"{arrow} {delta:+0.00;-0.00} {BaseSign}  {deltaPct:+0.0;-0.0}% past {(_rangeIsYear ? "year" : "month")}";
         _rangeChangeText.Foreground = new SolidColorBrush(lineColor);
     }
 
@@ -1514,7 +1729,7 @@ public sealed class IslandWindow : Window
     private TextBlock _mcResultHint = null!;
     private TextBlock _mcResultText = null!;
     private bool _mcShowResult;
-    private int _mcResultCurrency = CalcRubIndex;
+    private int _mcResultCurrency = 4;
     private const string BackspaceIconData = "M22,3H7C6.31,3,5.77,3.35,5.41,3.88L0,12l5.41,8.11C5.77,20.64,6.31,21,7,21h15c1.1,0,2-0.9,2-2V5C24,3.9,23.1,3,22,3z M19,15.59L17.59,17L14,13.41L10.41,17L9,15.59L12.59,12L9,8.41L10.41,7L14,10.59L17.59,7L19,8.41L15.41,12L19,15.59z";
 
     private Border MakeMcButton(UIElement content, Action onClick, bool accent = false, Func<bool>? selected = null)
@@ -1797,11 +2012,17 @@ public sealed class IslandWindow : Window
             RenderTransformOrigin = new Point(0, 0.5),
             RenderTransform = _mcWipeScale
         };
-        var resultGrid = new Grid();
-        resultGrid.Children.Add(_mcWipe);
+        var resultGrid = new Grid { Margin = new Thickness(0, 0, 72, 0) };
         resultGrid.Children.Add(_mcResultHint);
         resultGrid.Children.Add(_mcResultRow);
-        resultField.Child = resultGrid;
+        var resultOuter = new Grid();
+        resultOuter.Children.Add(_mcWipe);
+        resultOuter.Children.Add(resultGrid);
+        var mcBankChip = BuildBankChip();
+        mcBankChip.HorizontalAlignment = HorizontalAlignment.Right;
+        mcBankChip.Margin = new Thickness(0, 0, -2, 0);
+        resultOuter.Children.Add(mcBankChip);
+        resultField.Child = resultOuter;
         root.Children.Add(resultField);
 
         McRebuildTokens();
@@ -1821,7 +2042,7 @@ public sealed class IslandWindow : Window
     private double? McEvaluateRub(IList<object> tokens)
     {
         if (tokens.Count == 0 || tokens.Count % 2 == 0) return null;
-        var baseCurrency = tokens.OfType<McTerm>().FirstOrDefault(t => !t.IsPercent && t.Currency >= 0)?.Currency ?? CalcRubIndex;
+        var baseCurrency = tokens.OfType<McTerm>().FirstOrDefault(t => !t.IsPercent && t.Currency >= 0)?.Currency ?? BaseIndex;
 
         var values = new List<double>();
         var percentOperand = new List<bool>();
@@ -1895,7 +2116,7 @@ public sealed class IslandWindow : Window
         value == Math.Floor(value) ? value.ToString("#,##0", CalcNumberFormat) : FormatCalcNumber(value);
 
     private int McBaseCurrency() =>
-        _mcTokens.OfType<McTerm>().FirstOrDefault(t => !t.IsPercent && t.Currency >= 0)?.Currency ?? CalcRubIndex;
+        _mcTokens.OfType<McTerm>().FirstOrDefault(t => !t.IsPercent && t.Currency >= 0)?.Currency ?? BaseIndex;
 
     private string? McPercentNote()
     {
@@ -2000,7 +2221,7 @@ public sealed class IslandWindow : Window
 
         _mcShowResult = true;
         _mcRevealPending = true;
-        _mcResultCurrency = _mcTokens.OfType<McTerm>().FirstOrDefault(t => t.Currency >= 0)?.Currency ?? CalcRubIndex;
+        _mcResultCurrency = _mcTokens.OfType<McTerm>().FirstOrDefault(t => t.Currency >= 0)?.Currency ?? BaseIndex;
         McRebuildTokens();
         McRenderResult();
         _mcInput.Dispatcher.BeginInvoke(new Action(() =>
@@ -2239,9 +2460,9 @@ public sealed class IslandWindow : Window
 
     private static readonly int[] AllCurrencies = { 0, 1, 2, 3, 5, 4 };
     private static readonly int[] SwapperCurrencies = { 0, 1, 2, 3, 5, 4 };
-    private static readonly int[] ChartCurrencies = { 0, 1, 2, 3, 5 };
+    private static readonly int[] ChartCurrencies = { 0, 1, 2, 3, 5, 4 };
 
-    private Border BuildCurrencyChip(IReadOnlyList<int> options, int initial, Action<int> onPick, out Action<int> refresh)
+    private Border BuildCurrencyChip(IReadOnlyList<int> options, int initial, Action<int> onPick, out Action<int> refresh, Func<int, bool>? available = null)
     {
         var symbolHost = new ContentControl { VerticalAlignment = VerticalAlignment.Center, IsTabStop = false };
         var codeText = new TextBlock { FontSize = 12, FontFamily = LabelFont, Foreground = Brushes.White, Margin = new Thickness(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center };
@@ -2366,6 +2587,8 @@ public sealed class IslandWindow : Window
             Reveal.SetFraction(popupBorder, 0);
             popupBorder.BeginAnimation(Reveal.FractionProperty, Motion.Spring(0, 1, Motion.Soft));
             chevronRotate.BeginAnimation(RotateTransform.AngleProperty, Motion.Spring(chevronRotate.Angle, 180, Motion.Bouncy));
+            for (var i = 0; i < items.Count; i++)
+                items[i].Visibility = available == null || available(options[i]) ? Visibility.Visible : Visibility.Collapsed;
             for (var i = 0; i < items.Count; i++)
             {
                 var translate = (TranslateTransform)items[i].RenderTransform;
@@ -2595,15 +2818,20 @@ public sealed class IslandWindow : Window
         });
     }
 
-    private double RateToRub(int currency) => currency switch
+    private double RateToRub(int currency)
     {
-        0 => _calcLatest?.UsdRub ?? 0,
-        1 => _calcLatest?.EurRub ?? 0,
-        2 => _calcLatest?.CnyRub ?? 0,
-        3 => _calcLatest?.AedRub ?? 0,
-        5 => _calcLatest?.TryRub ?? 0,
-        _ => 1
-    };
+        if (currency == BaseIndex) return 1;
+        return currency switch
+        {
+            0 => _calcLatest?.UsdRub ?? 0,
+            1 => _calcLatest?.EurRub ?? 0,
+            2 => _calcLatest?.CnyRub ?? 0,
+            3 => _calcLatest?.AedRub ?? 0,
+            4 => _calcLatest?.RubRate ?? 0,
+            5 => _calcLatest?.TryRate ?? 0,
+            _ => 0
+        };
+    }
 
     private void RecalculateCalculator()
     {
@@ -3094,7 +3322,7 @@ public sealed class IslandWindow : Window
         {
             return new TextBlock
             {
-                Text = "₽",
+                Text = BaseSign,
                 Foreground = Brushes.White,
                 FontSize = 16,
                 FontWeight = FontWeights.SemiBold,
@@ -3105,6 +3333,16 @@ public sealed class IslandWindow : Window
         var r = history[^1];
         var prev = history.Count >= 2 ? history[^2] : null;
         var row = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+
+        var flagButton = new Border
+        {
+            Background = Brushes.Transparent, Cursor = Cursors.Hand, Padding = new Thickness(2, 4, 4, 4),
+            Margin = new Thickness(0, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center,
+            Child = BuildFlag(_rates.Bank)
+        };
+        flagButton.PreviewMouseDown += (_, e) => e.Handled = true;
+        flagButton.MouseLeftButtonUp += (_, e) => { e.Handled = true; SwitchCentralBank(); };
+        row.Children.Add(flagButton);
 
         row.Children.Add(BuildChip("$", $"{r.UsdRub:0.0000}", UsdAccent, first: true, Trend(r.UsdRub, prev?.UsdRub)));
         row.Children.Add(BuildChip("€", $"{r.EurRub:0.0000}", EurAccent, first: false, Trend(r.EurRub, prev?.EurRub)));
@@ -3120,7 +3358,7 @@ public sealed class IslandWindow : Window
         return current > p ? 1 : -1;
     }
 
-    private const double CollapsedRatesWidth = 326;
+    private const double CollapsedRatesWidth = 356;
 
     private void OnShellMouseWheel(object sender, MouseWheelEventArgs e)
     {
@@ -3661,6 +3899,7 @@ public sealed class IslandWindow : Window
             SnapWindowHeight(CollapsedHeight, duration, onCompleted: () =>
             {
                 _resizingTab = false;
+                if (!_isExpanded) FitCollapsedPillWidth();
 
                 // Reconcile against whatever the cursor is ACTUALLY doing
                 // right now - a Enter/Leave that arrived while this resize

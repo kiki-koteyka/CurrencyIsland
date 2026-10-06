@@ -17,6 +17,7 @@ public sealed class SettingsData
     public int LastTab { get; set; }
     public bool Animations { get; set; } = true;
     public int Theme { get; set; }
+    public int CentralBank { get; set; }
 }
 
 public static class AppSettings

@@ -16,7 +16,7 @@ public sealed class CbrRatesSample
     public double EurRub;
     public double CnyRub;
     public double AedRub;
-    public double TryRub;
+    public double TryRate;
     public DateTime Date;
 
     // Populated separately (see CbrRatesProvider.FetchWithPreviousAsync) -
@@ -36,11 +36,17 @@ public sealed class CbrHistoryPoint
     public double EurRub;
     public double CnyRub;
     public double AedRub;
-    public double TryRub;
+    public double TryRate;
+    public double RubRate = 1;
 }
 
-public sealed class CbrRatesProvider
+public sealed class CbrRatesProvider : IRatesSource
 {
+    public CentralBank Bank => CentralBank.Russia;
+    public string Name => "CBR";
+    public int BaseIndex => 4;
+    public string BaseSign => "\u20bd";
+
     private const string Endpoint = "http://www.cbr.ru/scripts/XML_daily.asp";
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(6) };
 
@@ -115,7 +121,8 @@ public sealed class CbrRatesProvider
         EurRub = s.EurRub,
         CnyRub = s.CnyRub,
         AedRub = s.AedRub,
-        TryRub = s.TryRub
+        TryRate = s.TryRate,
+        RubRate = 1
     };
 
     // CBR's internal per-currency codes (NOT the CharCode - these are only
@@ -188,7 +195,7 @@ public sealed class CbrRatesProvider
                 EurRub = ReadRate(doc, "EUR"),
                 CnyRub = ReadRate(doc, "CNY"),
                 AedRub = ReadRate(doc, "AED"),
-                TryRub = ReadRate(doc, "TRY"),
+                TryRate = ReadRate(doc, "TRY"),
                 Date = date2
             };
         }
