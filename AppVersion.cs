@@ -2,5 +2,5 @@
 
 public static class AppVersion
 {
-    public const string Current = "1.7.9";
+    public const string Current = "1.8.0";
 }
