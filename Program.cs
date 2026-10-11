@@ -691,7 +691,12 @@ public sealed class IslandWindow : Window
 
         var source = _rates;
         var points = await source.FetchHistoryAsync(ChartDays);
-        if (points.Count == 0 || !ReferenceEquals(source, _rates)) return;
+        if (!ReferenceEquals(source, _rates)) return;
+        if (points.Count == 0)
+        {
+            if (_latestHistory == null) _calcRateText.Text = "Rates unavailable";
+            return;
+        }
 
         _historyFetchedAt = DateTime.UtcNow;
         _latestHistory = points;
@@ -724,6 +729,17 @@ public sealed class IslandWindow : Window
         {
             _historyFetchedAt = DateTime.MinValue;
             _latestHistory = null;
+            _calcLatest = null;
+            _calcResultText.Text = "-";
+            _calcRateText.Text = "";
+            UpdateChartVisual(new List<CbrHistoryPoint>());
+            for (var d = 0; d < TableDays; d++)
+            {
+                _tableHeaderTexts[d].Text = "";
+                _usdValueTexts[d].Text = "";
+                _eurValueTexts[d].Text = "";
+                _cnyValueTexts[d].Text = "";
+            }
         }
 
         RefreshBankIndicators();
@@ -2839,14 +2855,16 @@ public sealed class IslandWindow : Window
         var amount = double.TryParse(_calcAmountBox.Text.Replace(',', '.'), NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed) ? parsed : 0;
         var fromRate = RateToRub(_calcFromCurrency);
         var toRate = RateToRub(_calcToCurrency);
-        var result = toRate == 0 ? 0 : amount * fromRate / toRate;
-        _calcResultText.Text = FormatCalcNumber(result);
-
-        if (fromRate > 0 && toRate > 0)
+        if (fromRate <= 0 || toRate <= 0)
         {
-            var oneUnit = fromRate / toRate;
-            _calcRateText.Text = $"1 {CalcCodes[_calcFromCurrency]} = {FormatCalcNumber(oneUnit)} {CalcCodes[_calcToCurrency]}";
+            _calcResultText.Text = "-";
+            _calcRateText.Text = "Rate unavailable";
+            return;
         }
+
+        _calcResultText.Text = FormatCalcNumber(amount * fromRate / toRate);
+        var oneUnit = fromRate / toRate;
+        _calcRateText.Text = $"1 {CalcCodes[_calcFromCurrency]} = {FormatCalcNumber(oneUnit)} {CalcCodes[_calcToCurrency]}";
     }
 
     // Called whenever fresh daily history lands (see ApplyHistoryToViews) -
