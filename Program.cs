@@ -283,6 +283,7 @@ public sealed class IslandWindow : Window
         _hoverPollTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
         _hoverPollTimer.Tick += (_, _) =>
         {
+            HealCollapsedShape();
             if (_dragging || _resizingTab || _forcedHidden) return;
             var over = IsCursorOverHoverZone();
             if (over == _isExpanded) return;
@@ -781,6 +782,7 @@ public sealed class IslandWindow : Window
         UpdateCalculatorRate(points[^1]);
         McRenderResult();
 
+        UpdateCollapsedRatesWidth();
         _collapsedIcon.Content = BuildCollapsedIcon(_currentTab);
         FitCollapsedPillWidth();
     }
@@ -3377,6 +3379,26 @@ public sealed class IslandWindow : Window
     }
 
     private const double CollapsedRatesWidth = 356;
+    private const double CollapsedRatesPadding = 24;
+    private double _collapsedRatesWidth = CollapsedRatesWidth;
+
+    private void UpdateCollapsedRatesWidth()
+    {
+        var row = BuildCollapsedRatesRow();
+        row.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var needed = Math.Ceiling(row.DesiredSize.Width) + CollapsedRatesPadding;
+        _collapsedRatesWidth = Math.Min(ExpandedWidth, Math.Max(CollapsedRatesWidth, needed));
+    }
+
+    public bool ForcedHidden => _forcedHidden;
+
+    public void Retire()
+    {
+        _currencyRefreshTimer.Stop();
+        _hoverPollTimer.Stop();
+        _topmostTimer?.Stop();
+        Close();
+    }
 
     private void OnShellMouseWheel(object sender, MouseWheelEventArgs e)
     {
@@ -4169,7 +4191,7 @@ public sealed class IslandWindow : Window
 
     private double GetCollapsedWidth()
     {
-        if (_latestHistory is { Count: > 0 }) return CollapsedRatesWidth;
+        if (_latestHistory is { Count: > 0 }) return _collapsedRatesWidth;
         return CollapsedWidth;
     }
 
@@ -4179,6 +4201,32 @@ public sealed class IslandWindow : Window
     // themselves, once, outside of this function - see the comments there
     // for why a resize animation is never a good time to also be resizing
     // the HWND it lives inside.
+    private int _shellAnimVersion;
+    private int _shapeMismatchTicks;
+
+    private void HealCollapsedShape()
+    {
+        if (_isExpanded || _resizingTab || _dragging || _forcedHidden)
+        {
+            _shapeMismatchTicks = 0;
+            return;
+        }
+
+        var broken = Math.Abs(_shell.Height - CollapsedHeight) > 1
+            || Math.Abs(_shell.Width - GetCollapsedWidth()) > 1
+            || Math.Abs(Height - CollapsedHeight) > 1
+            || _shell.CornerRadius.TopLeft < CollapsedHeight / 2 - 1;
+        if (!broken)
+        {
+            _shapeMismatchTicks = 0;
+            return;
+        }
+
+        if (++_shapeMismatchTicks < 3) return;
+        _shapeMismatchTicks = 0;
+        CollapseShellAndWindow(AnimDuration);
+    }
+
     private void AnimateShell(double targetWidth, double targetHeight, double targetRadius, TimeSpan? duration = null, Action? onHeightCompleted = null)
     {
         var animDuration = duration ?? AnimDuration;
@@ -4189,8 +4237,10 @@ public sealed class IslandWindow : Window
         var heightAnim = new DoubleAnimation(_shell.Height, targetHeight, animDuration) { EasingFunction = plainEase };
         var radiusAnim = new CornerRadiusAnimation(_shell.CornerRadius, new CornerRadius(targetRadius), animDuration) { EasingFunction = plainEase };
 
+        var version = ++_shellAnimVersion;
         heightAnim.Completed += (_, _) =>
         {
+            if (version != _shellAnimVersion) return;
             DebugTrace($"AnimateShell shell height anim COMPLETED actualH={_shell.Height:F1} winTop={Top:F1} winH={Height:F1}");
             onHeightCompleted?.Invoke();
         };
@@ -4406,6 +4456,9 @@ public sealed class App : Application
         _trayIcon.ContextMenuStrip = menu;
         _trayIcon.DoubleClick += (_, _) => _window?.ToggleForcedVisibility();
         Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplayEnvironmentChanged;
+        Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        Microsoft.Win32.SystemEvents.SessionSwitch += OnSessionSwitch;
 
         CheckForUpdatesInBackground();
 
@@ -4573,8 +4626,64 @@ public sealed class App : Application
         }));
     }
 
+    private DispatcherTimer? _recreateTimer;
+
+    private void OnDisplayEnvironmentChanged(object? sender, EventArgs e) => ScheduleWindowRecreate();
+
+    private void OnPowerModeChanged(object? sender, Microsoft.Win32.PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == Microsoft.Win32.PowerModes.Resume) ScheduleWindowRecreate();
+    }
+
+    private void OnSessionSwitch(object? sender, Microsoft.Win32.SessionSwitchEventArgs e)
+    {
+        if (e.Reason is Microsoft.Win32.SessionSwitchReason.SessionUnlock
+            or Microsoft.Win32.SessionSwitchReason.ConsoleConnect
+            or Microsoft.Win32.SessionSwitchReason.RemoteConnect)
+            ScheduleWindowRecreate();
+    }
+
+    private void ScheduleWindowRecreate()
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_recreateTimer == null)
+            {
+                _recreateTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+                _recreateTimer.Tick += (_, _) =>
+                {
+                    _recreateTimer.Stop();
+                    RecreateIslandWindow();
+                };
+            }
+            _recreateTimer.Stop();
+            _recreateTimer.Start();
+        }));
+    }
+
+    private void RecreateIslandWindow()
+    {
+        if (_window == null) return;
+
+        _settingsWindow?.Close();
+
+        var old = _window;
+        var hidden = old.ForcedHidden;
+
+        var fresh = new IslandWindow { SettingsRequested = OpenSettings };
+        _window = fresh;
+        fresh.Show();
+        fresh.RestorePinned();
+        if (hidden) fresh.ToggleForcedVisibility();
+
+        old.Retire();
+    }
+
     protected override void OnExit(ExitEventArgs e)
     {
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplayEnvironmentChanged;
+        Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        Microsoft.Win32.SystemEvents.SessionSwitch -= OnSessionSwitch;
         Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
         if (_trayIcon != null)
         {
