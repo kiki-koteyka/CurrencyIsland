@@ -81,7 +81,6 @@ public sealed class SettingsWindow : FluentWindow
             Margin = new Thickness(0, 0, 0, 16)
         });
         _pageGeneral.Children.Add(BuildAutostartCard());
-        _pageGeneral.Children.Add(BuildChartHoverStyleCard());
         _pageGeneral.Children.Add(BuildAnimationsCard());
         _pageGeneral.Children.Add(BuildStartTabCard());
         _pageGeneral.Children.Add(BuildThemeCard());
@@ -106,6 +105,7 @@ public sealed class SettingsWindow : FluentWindow
             Margin = new Thickness(0, 0, 0, 8)
         });
         _pageAbout.Children.Add(BuildCheckUpdateCard());
+        _pageAbout.Children.Add(BuildLogsCard());
         contentPanel.Children.Add(_pageAbout);
 
         body.Children.Add(contentPanel);
@@ -167,29 +167,6 @@ public sealed class SettingsWindow : FluentWindow
             Margin = new Thickness(0, 0, 0, 8),
             Icon = new SymbolIcon { Symbol = SymbolRegular.Power24 },
             Header = new TextBlock { Text = "Launch with Windows", FontSize = 14, VerticalAlignment = VerticalAlignment.Center },
-            Content = toggle
-        };
-    }
-
-    private CardControl BuildChartHoverStyleCard()
-    {
-        var toggle = new ToggleSwitch { IsChecked = _data.ChartCrosshairHover };
-        toggle.Checked += (_, _) =>
-        {
-            AppSettings.Update(d => d.ChartCrosshairHover = true);
-            _island.SetChartHoverStyle(true);
-        };
-        toggle.Unchecked += (_, _) =>
-        {
-            AppSettings.Update(d => d.ChartCrosshairHover = false);
-            _island.SetChartHoverStyle(false);
-        };
-
-        return new CardControl
-        {
-            Margin = new Thickness(0, 0, 0, 8),
-            Icon = new SymbolIcon { Symbol = SymbolRegular.CursorHover24 },
-            Header = new TextBlock { Text = "Crosshair chart hover", FontSize = 14, VerticalAlignment = VerticalAlignment.Center },
             Content = toggle
         };
     }
@@ -300,6 +277,81 @@ public sealed class SettingsWindow : FluentWindow
             Margin = new Thickness(0, 0, 0, 8),
             Icon = new SymbolIcon { Symbol = SymbolRegular.ArrowClockwise24 },
             Header = new TextBlock { Text = "Check for updates", FontSize = 14, VerticalAlignment = VerticalAlignment.Center },
+            Content = row
+        };
+    }
+
+    private CardControl BuildLogsCard()
+    {
+        var statusText = new TextBlock { FontSize = 11, Opacity = 0.6, Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center };
+        var openButton = new Button { Content = "Open", Appearance = ControlAppearance.Secondary, Margin = new Thickness(0, 0, 6, 0) };
+        var copyButton = new Button { Content = "Copy", Appearance = ControlAppearance.Secondary };
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        row.Children.Add(statusText);
+        row.Children.Add(openButton);
+        row.Children.Add(copyButton);
+
+        openButton.Click += (_, _) =>
+        {
+            try
+            {
+                System.IO.Directory.CreateDirectory(LogBundle.Folder);
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{LogBundle.Folder}\"") { UseShellExecute = true });
+                statusText.Text = "";
+            }
+            catch
+            {
+                statusText.Text = "Could not open the folder.";
+            }
+        };
+
+        copyButton.Click += (_, _) =>
+        {
+            try
+            {
+                var scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+                var data = new System.Windows.DataObject();
+                data.SetFileDropList(new System.Collections.Specialized.StringCollection { LogBundle.Build(scale) });
+                data.SetText(LogBundle.BuildText(scale));
+                var copied = false;
+                for (var attempt = 0; attempt < 5 && !copied; attempt++)
+                {
+                    try
+                    {
+                        System.Windows.Clipboard.SetDataObject(data, true);
+                        copied = true;
+                    }
+                    catch (System.Runtime.InteropServices.COMException)
+                    {
+                        System.Threading.Thread.Sleep(40);
+                    }
+                }
+                statusText.Text = copied ? "Copied to clipboard" : "Copy failed.";
+                if (copied)
+                {
+                    copyButton.Content = "Copied";
+                    var reset = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1600) };
+                    reset.Tick += (_, _) =>
+                    {
+                        reset.Stop();
+                        copyButton.Content = "Copy";
+                        statusText.Text = "";
+                    };
+                    reset.Start();
+                }
+            }
+            catch
+            {
+                statusText.Text = "Copy failed.";
+            }
+        };
+
+        return new CardControl
+        {
+            Margin = new Thickness(0, 0, 0, 8),
+            Icon = new SymbolIcon { Symbol = SymbolRegular.DocumentText24 },
+            Header = new TextBlock { Text = "Logs", FontSize = 14, VerticalAlignment = VerticalAlignment.Center },
             Content = row
         };
     }

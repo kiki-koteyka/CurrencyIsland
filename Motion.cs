@@ -37,6 +37,15 @@ public static class Motion
 
     public static bool Enabled = true;
 
+    public static readonly QuinticEase OutStrong = CreateOutStrong();
+
+    private static QuinticEase CreateOutStrong()
+    {
+        var ease = new QuinticEase { EasingMode = EasingMode.EaseOut };
+        ease.Freeze();
+        return ease;
+    }
+
     public static void Settle(int afterMs, Action settle)
     {
         if (!Enabled)
@@ -61,6 +70,16 @@ public static class Motion
     }
 
     public static TimeSpan Span(double milliseconds) => TimeSpan.FromMilliseconds(Enabled ? milliseconds : 1);
+
+    public static void PopIn(FrameworkElement element, double from = 0.7, int ms = 170)
+    {
+        var scale = new System.Windows.Media.ScaleTransform(from, from);
+        element.RenderTransformOrigin = new Point(0.5, 0.5);
+        element.RenderTransform = scale;
+        scale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, Tween(from, 1, ms, OutStrong));
+        scale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, Tween(from, 1, ms, OutStrong));
+        element.BeginAnimation(UIElement.OpacityProperty, Tween(0, 1, (int)(ms * 0.75), OutStrong));
+    }
 
     public static SpringEase Ease(SpringSpec spec) => new() { Stiffness = spec.Stiffness, Damping = spec.Damping, Seconds = spec.Seconds };
 

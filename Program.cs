@@ -36,7 +36,7 @@ public sealed class IslandWindow : Window
     // The fixed OS window is sized once for whichever tab needs the most
     // room (the chart tab). Content is vertically centered within it, so
     // this has to track whatever TabExpandedHeight's own max actually is.
-    private const double ExpandedHeight = 178;
+    private const double ExpandedHeight = 220;
 
     // Per-tab expanded heights - the table only needs ~95px of content, the
     // chart needs ~170px, the calculator (two amount rows + swap + rate
@@ -46,7 +46,7 @@ public sealed class IslandWindow : Window
     // pre-expand corner/growth-alignment math (deciding which corner to
     // grow from before anything has actually resized) so that math never
     // under-estimates how much room the pill might need.
-    private static readonly double[] TabExpandedHeight = { 138, 178, 152, 168, 168 };
+    private static readonly double[] TabExpandedHeight = { 150, 218, 184, 198, 204 };
     private const double EdgeMargin = 0;
     private const double TopEdgeMargin = 0;
     private const double BottomEdgeMargin = 0;
@@ -79,6 +79,7 @@ public sealed class IslandWindow : Window
     private string BaseSign => _rates.BaseSign;
     private const int TableDays = 3;
     private readonly TextBlock[] _tableHeaderTexts = new TextBlock[TableDays];
+    private readonly ContentControl[] _tableArrows = { new(), new(), new() };
     private readonly TextBlock[] _usdValueTexts = new TextBlock[TableDays];
     private readonly TextBlock[] _eurValueTexts = new TextBlock[TableDays];
     private readonly TextBlock[] _cnyValueTexts = new TextBlock[TableDays];
@@ -133,7 +134,6 @@ public sealed class IslandWindow : Window
         _rates = startupSettings.CentralBank == (int)CentralBank.Turkey ? _cbrtSource : _cbrSource;
         _calcToCurrency = BaseIndex;
         _mcResultCurrency = BaseIndex;
-        _chartCrosshairHover = startupSettings.ChartCrosshairHover;
         _pinned = startupSettings.Pinned;
         Motion.Enabled = startupSettings.Animations;
         _startTab = Math.Clamp(startupSettings.StartTab < 0 ? startupSettings.LastTab : startupSettings.StartTab, 0, TabCount - 1);
@@ -148,23 +148,8 @@ public sealed class IslandWindow : Window
         WindowStartupLocation = WindowStartupLocation.Manual;
         SizeToContent = SizeToContent.Manual;
 
-        // Width is fixed at the expanded footprint forever - it's never
-        // touched outside this line, unlike Height (see AnimateWindowHeight),
-        // so the phantom-event risk that comment used to warn about only
-        // ever applied to Height. Starting Height at CollapsedHeight (not
-        // ExpandedHeight) matters now for a reason that has nothing to do
-        // with that: the app always STARTS collapsed (_isExpanded defaults
-        // false), and IsCursorOverHoverZone()/PillTopFromWindow assume the
-        // window's real Height already matches whatever the pill is
-        // currently resting at. Starting it at the wrong (expanded) value
-        // left Height stale until the first real resize ever ran - for a
-        // Center/Bottom anchor specifically, that meant the hover check was
-        // testing the cursor against a rectangle offset from where _shell
-        // actually rendered (Center-aligned in a window taller than it),
-        // so the very first hover after launch could never register as
-        // "over" the pill at all.
         Width = ExpandedWidth;
-        Height = CollapsedHeight;
+        Height = ExpandedHeight;
         HorizontalContentAlignment = HorizontalAlignment.Right;
         VerticalContentAlignment = VerticalAlignment.Top;
 
@@ -176,14 +161,8 @@ public sealed class IslandWindow : Window
             // Plain flat dark gradient - an earlier "glossy sheen" (a bright
             // white gradient stop at the top edge) was mistaken for a stray
             // shadow/glow artifact and is gone for good, not just muted.
-            Background = new LinearGradientBrush(
-                new GradientStopCollection
-                {
-                    new GradientStop(Color.FromArgb(248, 32, 32, 35), 0),
-                    new GradientStop(Color.FromArgb(248, 8, 8, 10), 1)
-                },
-                new Point(0, 0), new Point(0, 1)),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(30, 255, 255, 255)),
+            Background = Brushes.Black,
+            BorderBrush = SoftTint.ShellRim(),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(CollapsedHeight / 2),
             Width = CollapsedWidth,
@@ -303,7 +282,7 @@ public sealed class IslandWindow : Window
         // below), that leftover asymmetry alone was enough to shift row 0's
         // vertical center - and everything centered in it, including the
         // tab dots - a couple pixels off the capsule's true center.
-        var root = new Grid { Margin = new Thickness(18, 10, 14, 10), Opacity = 0, Visibility = Visibility.Hidden };
+        var root = new Grid { Margin = new Thickness(18, 38, 14, 10), Opacity = 0, Visibility = Visibility.Hidden };
         _content = root;
         root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -313,7 +292,44 @@ public sealed class IslandWindow : Window
         _tabHost.VerticalContentAlignment = VerticalAlignment.Center;
         Grid.SetColumn(_tabHost, 0);
         Grid.SetRow(_tabHost, 0);
+        _tabHost.RenderTransform = _hostShift;
         root.Children.Add(_tabHost);
+
+        _stateSpinner = new MorphSpinner
+        {
+            Width = 40, Height = 40,
+            Foreground = new SolidColorBrush(Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent),
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
+        _stateText = new TextBlock
+        {
+            FontSize = 12, FontFamily = LabelFont, TextAlignment = TextAlignment.Center,
+            Foreground = new SolidColorBrush(Color.FromArgb(200, 235, 235, 240)),
+            HorizontalAlignment = HorizontalAlignment.Center, Visibility = Visibility.Collapsed
+        };
+        var retryText = new TextBlock { Text = "Try again", FontSize = 11, FontFamily = LabelFont, Foreground = Brushes.White };
+        _stateRetry = new Border
+        {
+            Background = SoftTint.Glass(30), BorderBrush = SoftTint.TileRim(), BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(11), Padding = new Thickness(13, 4, 13, 5), Margin = new Thickness(0, 9, 0, 0),
+            Cursor = Cursors.Hand, HorizontalAlignment = HorizontalAlignment.Center, Visibility = Visibility.Collapsed,
+            Child = retryText
+        };
+        AttachPress(_stateRetry, 0.96);
+        _stateRetry.MouseEnter += (_, _) => _stateRetry.Background = SoftTint.Glass(58);
+        _stateRetry.MouseLeave += (_, _) => _stateRetry.Background = SoftTint.Glass(30);
+        _stateRetry.PreviewMouseDown += (_, e) => e.Handled = true;
+        _stateRetry.MouseLeftButtonUp += (_, e) => { e.Handled = true; RetryLoad(); };
+        _stateContent = new StackPanel { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, RenderTransform = new TranslateTransform() };
+        _stateContent.Children.Add(_stateSpinner);
+        _stateContent.Children.Add(_stateText);
+        _stateContent.Children.Add(_stateRetry);
+        _stateOverlay = new Grid { Visibility = Visibility.Collapsed, Opacity = 0 };
+        _stateOverlay.Children.Add(_stateContent);
+        _stateOverlay.SizeChanged += (_, _) => CenterStateContent();
+        Grid.SetColumn(_stateOverlay, 0);
+        Grid.SetRow(_stateOverlay, 0);
+        root.Children.Add(_stateOverlay);
 
         // A Grid of fixed-height rows, not a StackPanel - at 125% DPI, 6 DIP
         // dots are 7.5 physical pixels, a fractional value that can't land
@@ -327,7 +343,7 @@ public sealed class IslandWindow : Window
         {
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(10, 0, 0, 0),
+            Margin = new Thickness(10, 0, 2, 28),
             UseLayoutRounding = true,
             SnapsToDevicePixels = true
         };
@@ -370,6 +386,8 @@ public sealed class IslandWindow : Window
             Height = 26,
             CornerRadius = new CornerRadius(13),
             Background = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)),
+            BorderBrush = SoftTint.TileRim(),
+            BorderThickness = new Thickness(1),
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Bottom,
             Margin = new Thickness(0, 0, 6, 6),
@@ -392,7 +410,7 @@ public sealed class IslandWindow : Window
 
         _pinIcon = new ShapePath
         {
-            Data = Geometry.Parse("M16,9V4h1c0.55,0,1-0.45,1-1c0-0.55-0.45-1-1-1H7C6.45,2,6,2.45,6,3c0,0.55,0.45,1,1,1h1v5c0,1.66-1.34,3-3,3v2h5.97v7l1,1l1-1v-7H19v-2C17.34,12,16,10.66,16,9z"),
+            Data = Geometry.Parse("M16,9V4h1c0.55,0,1-0.45,1-1s-0.45-1-1-1H7C6.45,2,6,2.45,6,3s0.45,1,1,1h1v5c0,1.66-1.34,3-3,3v2h5.97v7l1,1l1-1v-7H19v-2C17.34,12,16,10.66,16,9z"),
             Stretch = Stretch.Uniform,
             Width = 14, Height = 14,
             RenderTransformOrigin = new Point(0.5, 0.5),
@@ -404,6 +422,8 @@ public sealed class IslandWindow : Window
             Width = 26,
             Height = 26,
             CornerRadius = new CornerRadius(13),
+            BorderBrush = SoftTint.TileRim(),
+            BorderThickness = new Thickness(1),
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Top,
             Margin = new Thickness(0, 6, 6, 0),
@@ -443,9 +463,35 @@ public sealed class IslandWindow : Window
             IsHitTestVisible = false
         };
 
+        var bankChip = BuildBankChip();
+        AttachPress(bankChip, 0.95);
+        bankChip.Height = 26;
+        bankChip.CornerRadius = new CornerRadius(13);
+        bankChip.Padding = new Thickness(7, 0, 10, 0);
+
+        _headerSpinner = new MorphSpinner
+        {
+            Width = 18, Height = 18,
+            Margin = new Thickness(8, 0, 0, 0),
+            Foreground = new SolidColorBrush(Color.FromArgb(200, 255, 255, 255)),
+            VerticalAlignment = VerticalAlignment.Center,
+            Visibility = Visibility.Collapsed
+        };
+
+        var headerLeft = new StackPanel { Orientation = Orientation.Horizontal };
+        headerLeft.Children.Add(bankChip);
+        headerLeft.Children.Add(_headerSpinner);
+        _bankHeaderChip = headerLeft;
+        _bankHeaderChip.HorizontalAlignment = HorizontalAlignment.Left;
+        _bankHeaderChip.VerticalAlignment = VerticalAlignment.Top;
+        _bankHeaderChip.Margin = new Thickness(10, 6, 0, 0);
+        _bankHeaderChip.Opacity = 0;
+        _bankHeaderChip.Visibility = Visibility.Hidden;
+
         var shellRoot = new Grid();
         shellRoot.Children.Add(_collapsedIcon);
         shellRoot.Children.Add(root);
+        shellRoot.Children.Add(_bankHeaderChip);
         shellRoot.Children.Add(settingsButton);
         shellRoot.Children.Add(_pinButton);
 
@@ -457,12 +503,16 @@ public sealed class IslandWindow : Window
     private static readonly FontFamily LabelFont = new("Segoe UI Semibold");
     private static readonly FontFamily ValueFont = new("Consolas");
 
-    // A little table: a caption reading "Курс ЦБ на" sits above the currency
-    // column, and the two value columns are headed by the actual dates they
-    // cover (not "Вчера"/"Сегодня") - so it doubles as the "as of" date this
-    // used to show in a separate footer line, without spending extra rows.
-    private TextBlock _bankCaptionText = null!;
-    private ContentControl _bankCaptionFlag = null!;
+    private FrameworkElement _bankHeaderChip = null!;
+    private MorphSpinner _headerSpinner = null!;
+    private Grid _stateOverlay = null!;
+    private StackPanel _stateContent = null!;
+    private MorphSpinner _stateSpinner = null!;
+    private TextBlock _stateText = null!;
+    private Border _stateRetry = null!;
+    private int _fetching;
+    private string _overlayMode = "none";
+    private readonly TranslateTransform _hostShift = new();
 
     private readonly List<(ContentControl Flag, TextBlock Name)> _bankChips = new();
 
@@ -487,9 +537,11 @@ public sealed class IslandWindow : Window
         row.Children.Add(swap);
         var chip = new Border
         {
-            CornerRadius = new CornerRadius(9),
+            CornerRadius = new CornerRadius(10),
             Padding = new Thickness(5, 3, 7, 3),
             Background = new SolidColorBrush(Color.FromArgb(22, 255, 255, 255)),
+            BorderBrush = SoftTint.TileRim(),
+            BorderThickness = new Thickness(1),
             Cursor = Cursors.Hand,
             VerticalAlignment = VerticalAlignment.Center,
             Child = row
@@ -510,10 +562,8 @@ public sealed class IslandWindow : Window
         {
             flag.Content = BuildFlag(_rates.Bank);
             name.Text = _rates.Name;
+            Motion.PopIn(flag);
         }
-        if (_bankCaptionText == null) return;
-        _bankCaptionText.Text = $"{_rates.Name} rate on";
-        _bankCaptionFlag.Content = BuildFlag(_rates.Bank);
         if (_collapsedIcon != null)
         {
             _collapsedIcon.Content = BuildCollapsedIcon(_currentTab);
@@ -576,113 +626,119 @@ public sealed class IslandWindow : Window
 
     private FrameworkElement BuildRatesView()
     {
-        // Top-anchored, not centered - the settings gear is a fixed 26px
-        // circle pinned to the shell's own bottom-right corner regardless of
-        // which tab is showing, and centering this short table in the
-        // (also short) table-tab window put the CNY row's rightmost value
-        // right under it. Hugging the top instead keeps the whole table
-        // clear of that reserved corner. See TabExpandedHeight.
-        var grid = new Grid { VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 4, 16, 0) };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        for (var i = 0; i < TableDays; i++) grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(72) });
-        for (var i = 0; i < 4; i++) grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var grid = new Grid { VerticalAlignment = VerticalAlignment.Top, HorizontalAlignment = HorizontalAlignment.Left, Width = ChartWidth, Margin = new Thickness(CenteredTabLeftMargin - 6.4, -16.8, 0, 0) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(26) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(5) });
+        for (var i = 0; i < TableDays; i++) grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(15) });
+        for (var i = 0; i < 3; i++) grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(29) });
 
         var dimHeader = new SolidColorBrush(Color.FromArgb(120, 235, 235, 240));
-        _bankCaptionText = new TextBlock
-        {
-            FontSize = 10, FontFamily = LabelFont, Foreground = dimHeader,
-            Margin = new Thickness(6, 0, 5, 0), VerticalAlignment = VerticalAlignment.Center
-        };
-        _bankCaptionFlag = new ContentControl { VerticalAlignment = VerticalAlignment.Center, IsTabStop = false };
-        var swapGlyph = new ShapePath
-        {
-            Data = Geometry.Parse("M1,3 L8,3 M6,1 L8,3 L6,5 M8,7 L1,7 M3,5 L1,7 L3,9"),
-            Stroke = dimHeader, StrokeThickness = 1.1,
-            StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, StrokeLineJoin = PenLineJoin.Round,
-            Width = 9, Height = 10, VerticalAlignment = VerticalAlignment.Center
-        };
-        var captionRow = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        captionRow.Children.Add(_bankCaptionFlag);
-        captionRow.Children.Add(_bankCaptionText);
-        captionRow.Children.Add(swapGlyph);
-        var captionChip = new Border
-        {
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(5, 2, 7, 2),
-            Margin = new Thickness(-5, 0, 0, 1),
-            Background = Brushes.Transparent,
-            Cursor = Cursors.Hand,
-            VerticalAlignment = VerticalAlignment.Bottom,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Child = captionRow
-        };
-        captionChip.MouseEnter += (_, _) => captionChip.Background = new SolidColorBrush(Color.FromArgb(34, 255, 255, 255));
-        captionChip.MouseLeave += (_, _) => captionChip.Background = Brushes.Transparent;
-        captionChip.PreviewMouseDown += (_, e) => e.Handled = true;
-        captionChip.MouseLeftButtonUp += (_, e) => { e.Handled = true; SwitchCentralBank(); };
-        Grid.SetRow(captionChip, 0);
-        Grid.SetColumn(captionChip, 0);
-        Grid.SetColumnSpan(captionChip, 2);
-        grid.Children.Add(captionChip);
-        RefreshBankIndicators();
-
         for (var d = 0; d < TableDays; d++)
         {
             var header = new TextBlock
             {
                 FontSize = 10, FontFamily = LabelFont, Foreground = dimHeader,
-                HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 0, 0, 3)
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top
             };
             Grid.SetRow(header, 0);
-            Grid.SetColumn(header, d + 1);
+            Grid.SetColumn(header, d + 2);
+            if (d == TableDays - 1)
+            {
+                header.Foreground = new SolidColorBrush(Color.FromArgb(235, 255, 255, 255));
+                header.FontWeight = FontWeights.SemiBold;
+            }
             _tableHeaderTexts[d] = header;
             grid.Children.Add(header);
         }
 
-        AddCurrencyRow(grid, 1, "$", UsdAccent, _usdValueTexts);
-        AddCurrencyRow(grid, 2, "€", EurAccent, _eurValueTexts);
-        AddCurrencyRow(grid, 3, "¥", CnyAccent, _cnyValueTexts);
+        AddCurrencyRow(grid, 1, "$", "USD", UsdAccent, _usdValueTexts, _tableArrows[0]);
+        AddCurrencyRow(grid, 2, "€", "EUR", EurAccent, _eurValueTexts, _tableArrows[1]);
+        AddCurrencyRow(grid, 3, "¥", "CNY", CnyAccent, _cnyValueTexts, _tableArrows[2]);
 
         return grid;
     }
 
-    private static void AddCurrencyRow(Grid grid, int row, string symbol, Color accent, TextBlock[] valueTexts)
+    private static void AddCurrencyRow(Grid grid, int row, string symbol, string code, Color accent, TextBlock[] valueTexts, ContentControl arrow)
     {
-        // A single colored currency glyph replaces the old dot+"USD" pair -
-        // same information (which line/color this row is), a lot less
-        // horizontal space spent on it.
-        var labelRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 3, 0, 3) };
-        labelRow.Children.Add(new TextBlock
+        var badge = new Border
         {
-            Text = symbol, FontSize = 13, FontWeight = FontWeights.Bold, FontFamily = ValueFont,
-            Foreground = new SolidColorBrush(accent),
-            VerticalAlignment = VerticalAlignment.Center
-        });
-        Grid.SetRow(labelRow, row);
-        Grid.SetColumn(labelRow, 0);
-        grid.Children.Add(labelRow);
+            Width = 26, Height = 26, CornerRadius = new CornerRadius(13),
+            Margin = new Thickness(0, 1.5, 0, 1.5),
+            Background = SoftTint.Frozen(new SolidColorBrush(SoftTint.Mix(SoftTint.Base, accent, 0.55))),
+            BorderBrush = SoftTint.TileRim(), BorderThickness = new Thickness(1),
+            ToolTip = code,
+            Child = new TextBlock
+            {
+                Text = symbol, FontSize = 13, FontWeight = FontWeights.Bold, FontFamily = ValueFont,
+                Foreground = Brushes.White, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
+            }
+        };
+        Grid.SetRow(badge, row);
+        Grid.SetColumn(badge, 0);
+        grid.Children.Add(badge);
+
+        var fill = new SolidColorBrush(SoftTint.Mix(SoftTint.Base, accent, 0.26));
+        var restColor = fill.Color;
+        var hoverColor = SoftTint.Mix(SoftTint.Base, accent, 0.36);
+        var cells = new Border[TableDays];
 
         for (var d = 0; d < TableDays; d++)
         {
-            // The most recent (rightmost) day is the only one in full white -
-            // the two before it fade progressively dimmer, so the eye lands
-            // on "today" first without the older columns looking like dead
-            // filler.
             var isLatest = d == TableDays - 1;
+            var cell = new Border
+            {
+                Background = fill,
+                Margin = new Thickness(0, 1.5, isLatest ? 0 : 1, 1.5),
+                CornerRadius = d == 0 ? new CornerRadius(13, 0, 0, 13) : isLatest ? new CornerRadius(0, 13, 13, 0) : new CornerRadius(0)
+            };
+            cells[d] = cell;
+            Grid.SetRow(cell, row);
+            Grid.SetColumn(cell, d + 2);
+            grid.Children.Add(cell);
+
             var text = new TextBlock
             {
-                FontSize = isLatest ? 14 : 13,
-                FontWeight = FontWeights.SemiBold,
+                FontSize = isLatest ? 14 : 12,
+                FontWeight = isLatest ? FontWeights.Bold : FontWeights.Normal,
                 FontFamily = ValueFont,
-                Foreground = isLatest ? Brushes.White : new SolidColorBrush(Color.FromArgb((byte)(90 + d * 40), 235, 235, 240)),
-                HorizontalAlignment = HorizontalAlignment.Right,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, d == TableDays - 1 ? 0 : 4, 0)
+                Foreground = isLatest ? Brushes.White : new SolidColorBrush(Color.FromArgb((byte)(120 + d * 50), 235, 235, 240)),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
             };
-            Grid.SetRow(text, row);
-            Grid.SetColumn(text, d + 1);
-            grid.Children.Add(text);
             valueTexts[d] = text;
+
+            if (!isLatest)
+            {
+                cell.Child = text;
+                continue;
+            }
+
+            arrow.Width = 10;
+            arrow.HorizontalContentAlignment = HorizontalAlignment.Center;
+            arrow.VerticalContentAlignment = VerticalAlignment.Center;
+            arrow.VerticalAlignment = VerticalAlignment.Center;
+            var latest = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            latest.Children.Add(arrow);
+            latest.Children.Add(new Border { Width = 3 });
+            latest.Children.Add(text);
+            cell.Child = latest;
+        }
+
+        var rim = new Border
+        {
+            Margin = new Thickness(0, 1.5, 0, 1.5), CornerRadius = new CornerRadius(13),
+            BorderBrush = SoftTint.TileRim(), BorderThickness = new Thickness(1), IsHitTestVisible = false
+        };
+        Grid.SetRow(rim, row);
+        Grid.SetColumn(rim, 2);
+        Grid.SetColumnSpan(rim, TableDays);
+        grid.Children.Add(rim);
+
+        foreach (var cell in cells)
+        {
+            cell.MouseEnter += (_, _) => fill.BeginAnimation(SolidColorBrush.ColorProperty, new System.Windows.Media.Animation.ColorAnimation(hoverColor, Motion.Span(110)) { EasingFunction = Motion.OutStrong });
+            cell.MouseLeave += (_, _) => fill.BeginAnimation(SolidColorBrush.ColorProperty, new System.Windows.Media.Animation.ColorAnimation(restColor, Motion.Span(200)) { EasingFunction = Motion.OutStrong });
         }
     }
 
@@ -691,11 +747,27 @@ public sealed class IslandWindow : Window
         if (DateTime.UtcNow - _historyFetchedAt < CurrencyCacheLifetime) return;
 
         var source = _rates;
-        var points = await source.FetchHistoryAsync(ChartDays);
-        if (!ReferenceEquals(source, _rates)) return;
+        _fetching++;
+        UpdateStateOverlay();
+        List<CbrHistoryPoint> points;
+        try
+        {
+            points = await source.FetchHistoryAsync(ChartDays);
+        }
+        finally
+        {
+            _fetching--;
+        }
+
+        if (!ReferenceEquals(source, _rates))
+        {
+            UpdateStateOverlay();
+            return;
+        }
         if (points.Count == 0)
         {
             if (_latestHistory == null) _calcRateText.Text = "Rates unavailable";
+            UpdateStateOverlay();
             return;
         }
 
@@ -707,7 +779,9 @@ public sealed class IslandWindow : Window
 
     private void SwitchCentralBank()
     {
-        SetCentralBank(_rates.Bank == CentralBank.Russia ? CentralBank.Turkey : CentralBank.Russia, persist: true);
+        var target = _rates.Bank == CentralBank.Russia ? CentralBank.Turkey : CentralBank.Russia;
+        if (_isExpanded) CrossfadeTab(() => SetCentralBank(target, persist: true));
+        else CrossfadeCollapsed(() => SetCentralBank(target, persist: true));
     }
 
     private void SetCentralBank(CentralBank bank, bool persist)
@@ -734,6 +808,7 @@ public sealed class IslandWindow : Window
             _calcResultText.Text = "-";
             _calcRateText.Text = "";
             UpdateChartVisual(new List<CbrHistoryPoint>());
+            foreach (var arrow in _tableArrows) arrow.Content = null;
             for (var d = 0; d < TableDays; d++)
             {
                 _tableHeaderTexts[d].Text = "";
@@ -752,6 +827,7 @@ public sealed class IslandWindow : Window
         _rangeChipRefresh?.Invoke(_rangeCurrency);
         RecalculateCalculator();
         McRenderResult();
+        UpdateStateOverlay();
     }
 
     private void ApplyHistoryToViews()
@@ -778,6 +854,19 @@ public sealed class IslandWindow : Window
             _cnyValueTexts[d].Text = $"{p.CnyRub:0.0000}";
         }
 
+        if (tableSlice.Count >= 2)
+        {
+            var current = tableSlice[^1];
+            var previous = tableSlice[^2];
+            _tableArrows[0].Content = BuildTrendArrow(Trend(current.UsdRub, previous.UsdRub));
+            _tableArrows[1].Content = BuildTrendArrow(Trend(current.EurRub, previous.EurRub));
+            _tableArrows[2].Content = BuildTrendArrow(Trend(current.CnyRub, previous.CnyRub));
+        }
+        else
+        {
+            foreach (var arrow in _tableArrows) arrow.Content = null;
+        }
+
         UpdateChartVisual(points);
         UpdateCalculatorRate(points[^1]);
         McRenderResult();
@@ -785,6 +874,7 @@ public sealed class IslandWindow : Window
         UpdateCollapsedRatesWidth();
         _collapsedIcon.Content = BuildCollapsedIcon(_currentTab);
         FitCollapsedPillWidth();
+        UpdateStateOverlay();
     }
 
     private void FitCollapsedPillWidth()
@@ -818,31 +908,19 @@ public sealed class IslandWindow : Window
     private readonly ShapePath[] _seriesLine = new ShapePath[SeriesCount];
     private readonly Ellipse[][] _seriesMarkers = new Ellipse[SeriesCount][];
     private readonly TextBlock[] _seriesValueLabel = new TextBlock[SeriesCount];
+    private readonly Border[] _seriesValueTile = new Border[SeriesCount];
     private readonly TextBlock[] _chartDateLabels = new TextBlock[ChartDays];
     private Line _chartTodayGuide = null!;
     private Line _chartHoverGuide = null!;
     private Canvas _chartCanvas = null!;
-    private Border _chartTooltip = null!;
-    private TextBlock _tooltipDate = null!;
-    private readonly TextBlock[] _tooltipValues = new TextBlock[SeriesCount];
+    private static readonly string[] LegendCodes = { "USD", "EUR", "CNY" };
     private readonly Border[] _hoverChips = new Border[SeriesCount];
     private readonly TextBlock[] _hoverChipTexts = new TextBlock[SeriesCount];
     private readonly List<Point>[] _seriesPoints = new List<Point>[SeriesCount];
-    private bool _chartCrosshairHover;
+    private Border _axisBadge = null!;
+    private TextBlock _axisBadgeText = null!;
 
     private Color[] SeriesAccents => new[] { UsdAccent, EurAccent, CnyAccent };
-
-    public void SetChartHoverStyle(bool crosshair)
-    {
-        _chartCrosshairHover = crosshair;
-        // Switching styles mid-hover would leave the other style's elements
-        // stuck visible until the next mouse move - just hide everything
-        // both styles could have shown and let the next hover redraw fresh.
-        _chartTooltip.Visibility = Visibility.Hidden;
-        foreach (var chip in _hoverChips) chip.Visibility = Visibility.Hidden;
-        _chartHoverGuide.Visibility = Visibility.Hidden;
-        SetHoveredMarkerIndex(-1);
-    }
 
     private FrameworkElement BuildChartView()
     {
@@ -852,18 +930,14 @@ public sealed class IslandWindow : Window
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
         var legend = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 7) };
-        AddLegendItem(legend, "USD", UsdAccent);
-        AddLegendItem(legend, "EUR", EurAccent);
-        AddLegendItem(legend, "CNY", CnyAccent);
+        AddLegendItem(legend, LegendCodes[0], UsdAccent);
+        AddLegendItem(legend, LegendCodes[1], EurAccent);
+        AddLegendItem(legend, LegendCodes[2], CnyAccent);
         var legendRow = new Grid();
         legendRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         legendRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         legend.VerticalAlignment = VerticalAlignment.Center;
         legendRow.Children.Add(legend);
-        var chartBankChip = BuildBankChip();
-        chartBankChip.Margin = new Thickness(0, -3, 0, 4);
-        Grid.SetColumn(chartBankChip, 1);
-        legendRow.Children.Add(chartBankChip);
         Grid.SetRow(legendRow, 0);
         root.Children.Add(legendRow);
 
@@ -871,11 +945,14 @@ public sealed class IslandWindow : Window
         _chartCanvas = canvas;
         Grid.SetRow(canvas, 1);
 
+        var staticLayer = new Canvas { Width = ChartWidth, Height = ChartHeight, };
+        canvas.Children.Add(staticLayer);
+
         // Two very faint horizontal guides purely for depth/premium feel -
         // not calibrated to any value, just breaks up the empty background.
         for (var g = 1; g <= 2; g++)
         {
-            canvas.Children.Add(new Line
+            staticLayer.Children.Add(new Line
             {
                 X1 = 0, X2 = ChartPlotWidth,
                 Y1 = ChartHeight * g / 3.0, Y2 = ChartHeight * g / 3.0,
@@ -891,12 +968,12 @@ public sealed class IslandWindow : Window
             StrokeThickness = 1,
             StrokeDashArray = new DoubleCollection { 2, 2 }
         };
-        canvas.Children.Add(_chartTodayGuide);
+        staticLayer.Children.Add(_chartTodayGuide);
 
         _chartHoverGuide = new Line
         {
             Y1 = 0, Y2 = ChartHeight,
-            Stroke = new SolidColorBrush(Color.FromArgb(90, 255, 255, 255)),
+            Stroke = new SolidColorBrush(Color.FromArgb(130, 255, 255, 255)),
             StrokeThickness = 1,
             Visibility = Visibility.Hidden,
             IsHitTestVisible = false
@@ -917,7 +994,7 @@ public sealed class IslandWindow : Window
                     },
                     new Point(0, 0), new Point(0, 1))
             };
-            canvas.Children.Add(_seriesFill[s]);
+            staticLayer.Children.Add(_seriesFill[s]);
         }
         for (var s = 0; s < SeriesCount; s++)
         {
@@ -929,7 +1006,7 @@ public sealed class IslandWindow : Window
                 StrokeStartLineCap = PenLineCap.Round,
                 StrokeEndLineCap = PenLineCap.Round
             };
-            canvas.Children.Add(_seriesLine[s]);
+            staticLayer.Children.Add(_seriesLine[s]);
 
             _seriesMarkers[s] = new Ellipse[ChartDays];
             for (var d = 0; d < ChartDays; d++)
@@ -940,6 +1017,8 @@ public sealed class IslandWindow : Window
                     Fill = new SolidColorBrush(accent),
                     Stroke = new SolidColorBrush(Color.FromArgb(248, 12, 12, 14)),
                     StrokeThickness = 1.2,
+                    RenderTransformOrigin = new Point(0.5, 0.5),
+                    RenderTransform = new ScaleTransform(1, 1),
                     Visibility = Visibility.Hidden
                 };
                 _seriesMarkers[s][d] = marker;
@@ -949,103 +1028,42 @@ public sealed class IslandWindow : Window
             _seriesValueLabel[s] = new TextBlock
             {
                 FontSize = 10.5, FontWeight = FontWeights.Bold, FontFamily = ValueFont,
-                Foreground = new SolidColorBrush(accent)
+                Foreground = new SolidColorBrush(SoftTint.Light(accent))
             };
-            canvas.Children.Add(_seriesValueLabel[s]);
+            _seriesValueTile[s] = SoftTint.Tile(accent, 8, new Thickness(4, 0, 4, 1), _seriesValueLabel[s], 0.38, 0.16);
+            canvas.Children.Add(_seriesValueTile[s]);
         }
 
-        // Value/marker callout for the point nearest the cursor - hovering
-        // (there's no click target, just a plain hover-follow like every
-        // real charting app) shows the exact date and all three prices for
-        // that day instead of forcing a guess from the curve's shape alone.
-        _chartTooltip = new Border
+        for (var s = 0; s < SeriesCount; s++)
         {
-            Background = new SolidColorBrush(Color.FromRgb(26, 26, 29)),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(70, 255, 255, 255)),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(9, 6, 10, 7),
-            Visibility = Visibility.Hidden,
-            IsHitTestVisible = false
-        };
-        var tooltipStack = new StackPanel();
-        _tooltipDate = new TextBlock
-        {
-            FontSize = 11, FontFamily = LabelFont, FontWeight = FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(Color.FromArgb(190, 235, 235, 240)),
-            Margin = new Thickness(0, 0, 0, 2)
-        };
-        tooltipStack.Children.Add(_tooltipDate);
-        tooltipStack.Children.Add(new Border
-        {
-            Height = 1, Background = new SolidColorBrush(Color.FromArgb(35, 255, 255, 255)),
-            Margin = new Thickness(0, 0, 0, 3)
-        });
+            _hoverDots[s] = new Ellipse
+            {
+                Width = 8.5, Height = 8.5, Fill = new SolidColorBrush(accents[s]),
+                Stroke = Brushes.White, StrokeThickness = 2,
+                Visibility = Visibility.Hidden, IsHitTestVisible = false
+            };
+            canvas.Children.Add(_hoverDots[s]);
+        }
+
         var accents2 = SeriesAccents;
-        var seriesSymbols = new[] { "$", "€", "¥" };
         for (var s = 0; s < SeriesCount; s++)
         {
-            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0.5, 0, 0.5) };
-            row.Children.Add(new TextBlock
-            {
-                Text = seriesSymbols[s], FontSize = 13, FontWeight = FontWeights.Bold, FontFamily = ValueFont,
-                Foreground = new SolidColorBrush(accents2[s]),
-                Margin = new Thickness(0, 0, 3, 0), VerticalAlignment = VerticalAlignment.Center
-            });
-            _tooltipValues[s] = new TextBlock
-            {
-                FontSize = 12.5, FontFamily = ValueFont, FontWeight = FontWeights.SemiBold,
-                Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center
-            };
-            row.Children.Add(_tooltipValues[s]);
-            tooltipStack.Children.Add(row);
-        }
-        _chartTooltip.Child = tooltipStack;
-        canvas.Children.Add(_chartTooltip);
-
-        // Variant E ("crosshair") - no box at all, just three small colored
-        // chips sitting right next to each line's own point. Built here
-        // alongside the tooltip box; OnChartCanvasMouseMove shows whichever
-        // one _chartCrosshairHover currently points to and keeps the other
-        // hidden.
-        var hoverChipSymbols = new[] { "$", "€", "¥" };
-        for (var s = 0; s < SeriesCount; s++)
-        {
-            var chipRow = new StackPanel { Orientation = Orientation.Horizontal };
-            chipRow.Children.Add(new TextBlock
-            {
-                Text = hoverChipSymbols[s],
-                FontSize = 10, FontFamily = ValueFont, FontWeight = FontWeights.Bold,
-                Foreground = new SolidColorBrush(Color.FromRgb(12, 12, 14)),
-                Margin = new Thickness(0, 0, 3, 0),
-                Opacity = 0.75
-            });
             _hoverChipTexts[s] = new TextBlock
             {
-                FontSize = 10, FontFamily = ValueFont, FontWeight = FontWeights.Bold,
-                Foreground = new SolidColorBrush(Color.FromRgb(12, 12, 14))
+                FontSize = 10.5, FontFamily = ValueFont, FontWeight = FontWeights.Bold,
+                Foreground = new SolidColorBrush(SoftTint.Light(accents2[s])),
+                VerticalAlignment = VerticalAlignment.Center
             };
-            chipRow.Children.Add(_hoverChipTexts[s]);
-            _hoverChips[s] = new Border
-            {
-                Background = new SolidColorBrush(accents2[s]),
-                CornerRadius = new CornerRadius(9),
-                Padding = new Thickness(6, 2, 6, 2),
-                Visibility = Visibility.Hidden,
-                IsHitTestVisible = false,
-                Child = chipRow
-            };
+            _hoverChips[s] = SoftTint.Tile(accents2[s], 9, new Thickness(5, 0, 5, 1), _hoverChipTexts[s], 0.4, 0.18);
+            _hoverChips[s].Height = 19;
+            _hoverChips[s].Visibility = Visibility.Hidden;
+            _hoverChips[s].IsHitTestVisible = false;
             canvas.Children.Add(_hoverChips[s]);
         }
 
+        foreach (UIElement child in canvas.Children) child.IsHitTestVisible = false;
         canvas.MouseMove += OnChartCanvasMouseMove;
-        canvas.MouseLeave += (_, _) =>
-        {
-            _chartHoverGuide.Visibility = Visibility.Hidden;
-            _chartTooltip.Visibility = Visibility.Hidden;
-            foreach (var chip in _hoverChips) chip.Visibility = Visibility.Hidden;
-            SetHoveredMarkerIndex(-1);
-        };
+        canvas.MouseLeave += (_, _) => ClearChartHover();
 
         root.Children.Add(canvas);
 
@@ -1067,6 +1085,20 @@ public sealed class IslandWindow : Window
             _chartDateLabels[i] = label;
             dateCanvas.Children.Add(label);
         }
+
+        _axisBadgeText = new TextBlock
+        {
+            FontSize = 9, FontFamily = LabelFont, FontWeight = FontWeights.Bold,
+            Foreground = new SolidColorBrush(Color.FromRgb(17, 17, 17)), VerticalAlignment = VerticalAlignment.Center
+        };
+        _axisBadge = new Border
+        {
+            Background = Brushes.White, CornerRadius = new CornerRadius(7.5), Height = 15,
+            Padding = new Thickness(6, 0, 6, 1), Visibility = Visibility.Hidden, IsHitTestVisible = false,
+            Child = _axisBadgeText
+        };
+        Canvas.SetTop(_axisBadge, -1.5);
+        dateCanvas.Children.Add(_axisBadge);
         Grid.SetRow(dateCanvas, 2);
         root.Children.Add(dateCanvas);
 
@@ -1075,15 +1107,17 @@ public sealed class IslandWindow : Window
 
     private static void AddLegendItem(Panel parent, string label, Color accent)
     {
-        var item = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(parent.Children.Count == 0 ? 0 : 10, 0, 0, 0) };
-        item.Children.Add(new Ellipse { Width = 6, Height = 6, Fill = new SolidColorBrush(accent), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 0) });
+        var item = new StackPanel { Orientation = Orientation.Horizontal };
+        item.Children.Add(new Ellipse { Width = 6, Height = 6, Fill = new SolidColorBrush(accent), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 5, 0) });
         item.Children.Add(new TextBlock
         {
-            Text = label, FontSize = 9, FontFamily = LabelFont,
-            Foreground = new SolidColorBrush(Color.FromArgb(150, 235, 235, 240)),
+            Text = label, FontSize = 10.5, FontFamily = LabelFont,
+            Foreground = new SolidColorBrush(SoftTint.Light(accent)),
             VerticalAlignment = VerticalAlignment.Center
         });
-        parent.Children.Add(item);
+        var pill = SoftTint.Tile(accent, 10, new Thickness(7, 2, 8, 2), item, 0.34, 0.14);
+        pill.Margin = new Thickness(parent.Children.Count == 0 ? 0 : 5, 0, 0, 0);
+        parent.Children.Add(pill);
     }
 
     // Currency codes/symbols/accents for the calculator's two selector
@@ -1115,8 +1149,10 @@ public sealed class IslandWindow : Window
         // below) had nothing behind it at all, reading as "invisible".
         var card = new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(16, 255, 255, 255)),
-            CornerRadius = new CornerRadius(12),
+            Background = SoftTint.Glass(14),
+            BorderBrush = SoftTint.TileRim(),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(14),
             Padding = new Thickness(10, 7, 10, 7)
         };
         var cardContent = new StackPanel();
@@ -1124,8 +1160,10 @@ public sealed class IslandWindow : Window
 
         var amountField = new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(28, 255, 255, 255)),
-            CornerRadius = new CornerRadius(9),
+            Background = SoftTint.Glass(24),
+            BorderBrush = SoftTint.TileRim(),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(11),
             Padding = new Thickness(8, 5, 6, 5),
             Margin = new Thickness(0, 0, 0, 3)
         };
@@ -1195,8 +1233,10 @@ public sealed class IslandWindow : Window
 
         var resultField = new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(28, 255, 255, 255)),
-            CornerRadius = new CornerRadius(9),
+            Background = SoftTint.Glass(24),
+            BorderBrush = SoftTint.TileRim(),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(11),
             Padding = new Thickness(8, 5, 6, 5),
             Margin = new Thickness(0, 3, 0, 5)
         };
@@ -1288,10 +1328,6 @@ public sealed class IslandWindow : Window
         rateLine.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         _calcRateText.VerticalAlignment = VerticalAlignment.Center;
         rateLine.Children.Add(_calcRateText);
-        var swapperBankChip = BuildBankChip();
-        swapperBankChip.Margin = new Thickness(0, 0, 0, 0);
-        Grid.SetColumn(swapperBankChip, 1);
-        rateLine.Children.Add(swapperBankChip);
         cardContent.Children.Add(rateLine);
 
         root.Children.Add(card);
@@ -1311,13 +1347,14 @@ public sealed class IslandWindow : Window
     private Canvas _rangeCanvas = null!;
     private ShapePath _rangeLine = null!;
     private ShapePath _rangeFill = null!;
-    private TextBlock _rangeEmptyText = null!;
-    private MorphSpinner _rangeSpinner = null!;
     private Line _rangeHoverGuide = null!;
     private Ellipse _rangeHoverMarker = null!;
     private Ellipse _rangeEndMarker = null!;
     private Border _rangeHoverPill = null!;
     private TextBlock _rangeHoverPillText = null!;
+    private TextBlock _rangeHoverPrice = null!;
+    private TextBlock _rangeHoverDay = null!;
+    private Color _rangeHoverTint;
     private const double RangeChartHeight = 92;
     private const double RangeChartWidth = ChartWidth - 34;
 
@@ -1338,13 +1375,24 @@ public sealed class IslandWindow : Window
         var segRow = new StackPanel { Orientation = Orientation.Horizontal };
         segRow.Children.Add(_rangeMonthButton);
         segRow.Children.Add(_rangeYearButton);
+        _rangeThumb = new Border
+        {
+            Width = RangeSegmentWidth, CornerRadius = new CornerRadius(10),
+            Background = SoftTint.Glass(64), HorizontalAlignment = HorizontalAlignment.Left,
+            RenderTransform = _rangeThumbShift, IsHitTestVisible = false
+        };
+        var segGrid = new Grid();
+        segGrid.Children.Add(_rangeThumb);
+        segGrid.Children.Add(segRow);
         var segSwitch = new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(20, 255, 255, 255)),
-            CornerRadius = new CornerRadius(12),
+            Background = SoftTint.Glass(20),
+            BorderBrush = SoftTint.TileRim(),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(13),
             Padding = new Thickness(2),
             VerticalAlignment = VerticalAlignment.Center,
-            Child = segRow
+            Child = segGrid
         };
         Grid.SetColumn(segSwitch, 1);
         header.Children.Add(segSwitch);
@@ -1365,18 +1413,15 @@ public sealed class IslandWindow : Window
         rateRow.Children.Add(_rangeChangeText);
         var rateGrid = new Grid();
         rateGrid.Children.Add(rateRow);
-        var rangeBankChip = BuildBankChip();
-        rangeBankChip.HorizontalAlignment = HorizontalAlignment.Right;
-        rangeBankChip.VerticalAlignment = VerticalAlignment.Bottom;
-        rangeBankChip.Margin = new Thickness(0, 0, 0, 3);
-        rateGrid.Children.Add(rangeBankChip);
         root.Children.Add(rateGrid);
 
         var chartHost = new Grid { Height = RangeChartHeight, Width = RangeChartWidth, HorizontalAlignment = HorizontalAlignment.Left };
         _rangeCanvas = new Canvas { Width = RangeChartWidth, Height = RangeChartHeight, Background = Brushes.Transparent };
+        var rangeStatic = new Canvas { Width = RangeChartWidth, Height = RangeChartHeight, };
+        _rangeCanvas.Children.Add(rangeStatic);
         for (var g = 1; g <= 2; g++)
         {
-            _rangeCanvas.Children.Add(new Line
+            rangeStatic.Children.Add(new Line
             {
                 X1 = 0, X2 = RangeChartWidth,
                 Y1 = RangeChartHeight * g / 3.0, Y2 = RangeChartHeight * g / 3.0,
@@ -1386,8 +1431,8 @@ public sealed class IslandWindow : Window
         }
         _rangeFill = new ShapePath { StrokeThickness = 0 };
         _rangeLine = new ShapePath { StrokeThickness = 2.2, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, StrokeLineJoin = PenLineJoin.Round };
-        _rangeCanvas.Children.Add(_rangeFill);
-        _rangeCanvas.Children.Add(_rangeLine);
+        rangeStatic.Children.Add(_rangeFill);
+        rangeStatic.Children.Add(_rangeLine);
         _rangeHoverGuide = new Line
         {
             Y1 = 0, Y2 = RangeChartHeight,
@@ -1407,49 +1452,47 @@ public sealed class IslandWindow : Window
             Stroke = new SolidColorBrush(Color.FromArgb(248, 12, 12, 14)), StrokeThickness = 1.2
         };
         _rangeCanvas.Children.Add(_rangeHoverMarker);
-        _rangeHoverPillText = new TextBlock { FontSize = 10.5, FontFamily = LabelFont, Foreground = Brushes.White };
+        _rangeHoverPillText = new TextBlock { FontSize = 9, FontFamily = LabelFont, Foreground = new SolidColorBrush(Color.FromArgb(185, 235, 235, 240)) };
+        _rangeHoverPrice = new TextBlock { FontSize = 13, FontWeight = FontWeights.Bold, FontFamily = ValueFont, Foreground = Brushes.White, Margin = new Thickness(0, 0, 0, 2) };
+        _rangeHoverDay = new TextBlock { FontSize = 9, FontFamily = LabelFont };
+        var hoverStack = new StackPanel();
+        hoverStack.Children.Add(_rangeHoverPillText);
+        hoverStack.Children.Add(_rangeHoverPrice);
+        hoverStack.Children.Add(_rangeHoverDay);
         _rangeHoverPill = new Border
         {
-            Background = new SolidColorBrush(Color.FromRgb(26, 26, 29)),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(70, 255, 255, 255)),
+            Background = SoftTint.Tint(Colors.White),
+            BorderBrush = SoftTint.TileRim(),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(7, 2, 7, 3),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(8, 4, 8, 5),
             Visibility = Visibility.Hidden, IsHitTestVisible = false,
-            Child = _rangeHoverPillText
+            Child = hoverStack
         };
         _rangeCanvas.Children.Add(_rangeHoverPill);
+        foreach (UIElement child in _rangeCanvas.Children) child.IsHitTestVisible = false;
         _rangeCanvas.MouseMove += OnRangeChartMouseMove;
         _rangeCanvas.MouseLeave += (_, _) => HideRangeHover();
         chartHost.Children.Add(_rangeCanvas);
-        _rangeEmptyText = new TextBlock
-        {
-            Text = "No data", FontSize = 11, FontFamily = LabelFont,
-            Foreground = new SolidColorBrush(Color.FromArgb(120, 235, 235, 240)),
-            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
-            Visibility = Visibility.Collapsed
-        };
-        chartHost.Children.Add(_rangeEmptyText);
-        _rangeSpinner = new MorphSpinner
-        {
-            Width = 34, Height = 34,
-            Foreground = new SolidColorBrush(Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent),
-            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
-        };
-        chartHost.Children.Add(_rangeSpinner);
         root.Children.Add(chartHost);
 
         UpdateRangeSegments();
         return root;
     }
 
+    private const double RangeSegmentWidth = 54;
+    private Border _rangeThumb = null!;
+    private readonly TranslateTransform _rangeThumbShift = new();
+    private bool _rangeThumbReady;
+
     private Border BuildRangeSegment(string label, bool isYear)
     {
         var text = new TextBlock { Text = label, FontSize = 10, FontFamily = LabelFont, Foreground = Brushes.White, HorizontalAlignment = HorizontalAlignment.Center };
         var button = new Border
         {
+            Width = RangeSegmentWidth,
             CornerRadius = new CornerRadius(10),
-            Padding = new Thickness(11, 2, 11, 2),
+            Padding = new Thickness(0, 2, 0, 2),
             Cursor = Cursors.Hand,
             Child = text
         };
@@ -1464,12 +1507,37 @@ public sealed class IslandWindow : Window
         return button;
     }
 
+    private bool IsRangeSegmentActive(object sender) =>
+        ReferenceEquals(sender, _rangeYearButton) ? _rangeIsYear : !_rangeIsYear;
+
+    private void OnRangeSegmentEnter(object sender, MouseEventArgs e)
+    {
+        if (sender is Border button && !IsRangeSegmentActive(sender)) button.Background = SoftTint.Glass(26);
+    }
+
+    private void OnRangeSegmentLeave(object sender, MouseEventArgs e)
+    {
+        if (sender is Border button) button.Background = Brushes.Transparent;
+    }
+
     private void UpdateRangeSegments()
     {
-        var activeBg = new SolidColorBrush(Color.FromArgb(70, 255, 255, 255));
+        var targetX = _rangeIsYear ? RangeSegmentWidth : 0;
+        if (_rangeThumbReady) _rangeThumbShift.BeginAnimation(TranslateTransform.XProperty, Motion.Tween(_rangeThumbShift.X, targetX, 220, Motion.OutStrong));
+        else _rangeThumbShift.X = targetX;
+        _rangeThumbReady = true;
+
+        _rangeMonthButton.MouseEnter -= OnRangeSegmentEnter;
+        _rangeYearButton.MouseEnter -= OnRangeSegmentEnter;
+        _rangeMonthButton.MouseLeave -= OnRangeSegmentLeave;
+        _rangeYearButton.MouseLeave -= OnRangeSegmentLeave;
+        _rangeMonthButton.MouseEnter += OnRangeSegmentEnter;
+        _rangeYearButton.MouseEnter += OnRangeSegmentEnter;
+        _rangeMonthButton.MouseLeave += OnRangeSegmentLeave;
+        _rangeYearButton.MouseLeave += OnRangeSegmentLeave;
         var inactiveText = new SolidColorBrush(Color.FromArgb(150, 235, 235, 240));
-        _rangeMonthButton.Background = !_rangeIsYear ? activeBg : Brushes.Transparent;
-        _rangeYearButton.Background = _rangeIsYear ? activeBg : Brushes.Transparent;
+        _rangeMonthButton.Background = Brushes.Transparent;
+        _rangeYearButton.Background = Brushes.Transparent;
         ((TextBlock)_rangeMonthButton.Child).Foreground = !_rangeIsYear ? Brushes.White : inactiveText;
         ((TextBlock)_rangeYearButton.Child).Foreground = _rangeIsYear ? Brushes.White : inactiveText;
     }
@@ -1491,6 +1559,30 @@ public sealed class IslandWindow : Window
         _rangePoints = points;
         RenderRangeChart();
         RevealRangeChart();
+    }
+
+    private void RevealChart()
+    {
+        if (!Motion.Enabled) return;
+
+        var shift = new TranslateTransform(-0.2, 0);
+        var mask = new LinearGradientBrush(Colors.Black, Colors.Transparent, new Point(0, 0.5), new Point(0.2, 0.5))
+        {
+            RelativeTransform = shift
+        };
+        _chartCanvas.OpacityMask = mask;
+
+        var sweep = Motion.Tween(-0.2, 1.0, 650, new CubicEase { EasingMode = EasingMode.EaseInOut });
+        sweep.Completed += (_, _) =>
+        {
+            if (ReferenceEquals(_chartCanvas.OpacityMask, mask)) _chartCanvas.OpacityMask = null;
+        };
+        shift.BeginAnimation(TranslateTransform.XProperty, sweep);
+
+        Motion.Settle(900, () =>
+        {
+            if (ReferenceEquals(_chartCanvas.OpacityMask, mask)) _chartCanvas.OpacityMask = null;
+        });
     }
 
     private void RevealRangeChart()
@@ -1529,9 +1621,7 @@ public sealed class IslandWindow : Window
     {
         if (_rangePoints is not { Count: >= 2 } points)
         {
-            var loading = _rangePoints == null;
-            _rangeSpinner.Visibility = loading ? Visibility.Visible : Visibility.Collapsed;
-            _rangeEmptyText.Visibility = loading ? Visibility.Collapsed : Visibility.Visible;
+            UpdateStateOverlay();
             _rangeLine.Data = null;
             _rangeFill.Data = null;
             _rangeChartPoints.Clear();
@@ -1542,8 +1632,7 @@ public sealed class IslandWindow : Window
             return;
         }
 
-        _rangeEmptyText.Visibility = Visibility.Collapsed;
-        _rangeSpinner.Visibility = Visibility.Collapsed;
+        UpdateStateOverlay();
 
         const double pad = 3;
         var height = RangeChartHeight;
@@ -1585,11 +1674,16 @@ public sealed class IslandWindow : Window
         _rangeChangeText.Foreground = new SolidColorBrush(lineColor);
     }
 
+    private bool _rangeHoverActive;
+
     private void HideRangeHover()
     {
-        _rangeHoverGuide.Visibility = Visibility.Hidden;
-        _rangeHoverMarker.Visibility = Visibility.Hidden;
-        _rangeHoverPill.Visibility = Visibility.Hidden;
+        _rangeHoverActive = false;
+        _rangeHoverIdx = -1;
+        if (_rangeHoverGuide.Visibility != Visibility.Visible) return;
+        FadeTo(_rangeHoverGuide, 0, 100);
+        FadeTo(_rangeHoverMarker, 0, 90);
+        FadeTo(_rangeHoverPill, 0, 90);
     }
 
     private void OnRangeChartMouseMove(object sender, MouseEventArgs e)
@@ -1597,25 +1691,61 @@ public sealed class IslandWindow : Window
         if (_rangePoints is not { Count: >= 2 } points || _rangeChartPoints.Count != points.Count) return;
 
         var n = points.Count;
-        var idx = Math.Clamp((int)Math.Round(e.GetPosition(_rangeCanvas).X / (RangeChartWidth / (n - 1))), 0, n - 1);
+        ShowRangeHover(Math.Clamp((int)Math.Round(e.GetPosition(_rangeCanvas).X / (RangeChartWidth / (n - 1))), 0, n - 1));
+    }
+
+    private void ShowRangeHover(int idx)
+    {
+        if (_rangePoints is not { Count: >= 2 } points || _rangeChartPoints.Count != points.Count) return;
         var pt = _rangeChartPoints[idx];
 
-        _rangeHoverGuide.X1 = pt.X;
-        _rangeHoverGuide.X2 = pt.X;
-        _rangeHoverGuide.Visibility = Visibility.Visible;
+        if (_rangeHoverActive && idx == _rangeHoverIdx) return;
+        _rangeHoverIdx = idx;
+
+        var first = !_rangeHoverActive || _rangeHoverGuide.Visibility != Visibility.Visible || _rangeHoverGuide.Opacity < 0.05;
+        _rangeHoverActive = true;
+
+        Place(_rangeHoverGuide, pt.X, 0, first, 60);
+        FadeTo(_rangeHoverGuide, 1, 80);
 
         _rangeHoverMarker.Fill = new SolidColorBrush(_rangeLineColor);
-        Canvas.SetLeft(_rangeHoverMarker, pt.X - 3.5);
-        Canvas.SetTop(_rangeHoverMarker, pt.Y - 3.5);
-        _rangeHoverMarker.Visibility = Visibility.Visible;
+        Place(_rangeHoverMarker, pt.X - 3.5, pt.Y - 3.5, first, 60);
+        FadeTo(_rangeHoverMarker, 1, 80);
 
-        var date = points[idx].Date.ToString("d MMM yyyy", System.Globalization.CultureInfo.GetCultureInfo("en-US"));
-        _rangeHoverPillText.Text = $"{date}   {points[idx].Rate:0.00}";
-        _rangeHoverPill.Visibility = Visibility.Visible;
+        var en = System.Globalization.CultureInfo.GetCultureInfo("en-US");
+        _rangeHoverPillText.Text = points[idx].Date.ToString("d MMM yyyy", en);
+        _rangeHoverPrice.Text = $"{points[idx].Rate:0.00} {BaseSign}";
+        _rangeHoverDay.Inlines.Clear();
+
+        var hasHistory = idx > 0;
+        _rangeHoverDay.Visibility = hasHistory ? Visibility.Visible : Visibility.Collapsed;
+        if (hasHistory)
+        {
+            AddHoverDelta(_rangeHoverDay, "Day", points[idx].Rate, points[idx - 1].Rate, false);
+            AddHoverDelta(_rangeHoverDay, _rangeIsYear ? "Year" : "Month", points[idx].Rate, points[0].Rate, true);
+        }
+
+        if (_rangeHoverTint != _rangeLineColor)
+        {
+            _rangeHoverTint = _rangeLineColor;
+            _rangeHoverPill.Background = SoftTint.Tint(_rangeLineColor, 0.3, 0.12);
+        }
+
         _rangeHoverPill.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         var size = _rangeHoverPill.DesiredSize;
-        Canvas.SetLeft(_rangeHoverPill, Math.Clamp(pt.X - size.Width / 2, 0, RangeChartWidth - size.Width));
-        Canvas.SetTop(_rangeHoverPill, pt.Y < size.Height + 8 ? RangeChartHeight - size.Height : 0);
+        var left = pt.X < RangeChartWidth / 2 ? pt.X + 12 : pt.X - 12 - size.Width;
+        var top = pt.Y < RangeChartHeight / 2 ? Math.Max(0, RangeChartHeight - size.Height) : 0;
+        Place(_rangeHoverPill, Math.Clamp(left, 0, Math.Max(0, RangeChartWidth - size.Width)), top, first, 120);
+        FadeTo(_rangeHoverPill, 1, 90);
+    }
+
+    private static void AddHoverDelta(TextBlock target, string label, double rate, double reference, bool gap)
+    {
+        var delta = rate - reference;
+        var pct = reference == 0 ? 0 : Math.Abs(delta / reference * 100);
+        var color = delta >= 0 ? TrendUpColor : TrendDownColor;
+        target.Inlines.Add(new System.Windows.Documents.Run($"{(gap ? "   " : "")}{label} ") { Foreground = new SolidColorBrush(Color.FromArgb(140, 235, 235, 240)) });
+        target.Inlines.Add(new System.Windows.Documents.Run($"{(delta >= 0 ? "▲" : "▼")}{pct:0.0}%") { Foreground = new SolidColorBrush(color), FontWeight = FontWeights.SemiBold });
     }
 
     private sealed class McTerm
@@ -1750,20 +1880,26 @@ public sealed class IslandWindow : Window
     private int _mcResultCurrency = 4;
     private const string BackspaceIconData = "M22,3H7C6.31,3,5.77,3.35,5.41,3.88L0,12l5.41,8.11C5.77,20.64,6.31,21,7,21h15c1.1,0,2-0.9,2-2V5C24,3.9,23.1,3,22,3z M19,15.59L17.59,17L14,13.41L10.41,17L9,15.59L12.59,12L9,8.41L10.41,7L14,10.59L17.59,7L19,8.41L15.41,12L19,15.59z";
 
-    private Border MakeMcButton(UIElement content, Action onClick, bool accent = false, Func<bool>? selected = null)
+    private Border MakeMcButton(UIElement content, Action onClick, bool accent = false, Func<bool>? selected = null, Color? tint = null)
     {
         var accentColor = Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent;
-        Color Idle() => selected?.Invoke() == true
-            ? Color.FromArgb(120, accentColor.R, accentColor.G, accentColor.B)
-            : accent ? Color.FromArgb(90, accentColor.R, accentColor.G, accentColor.B) : Color.FromArgb(34, 255, 255, 255);
-        Color Hover() => accent || selected?.Invoke() == true
-            ? Color.FromArgb(140, accentColor.R, accentColor.G, accentColor.B)
-            : Color.FromArgb(64, 255, 255, 255);
+        Brush Idle() => tint is { } t
+            ? (selected?.Invoke() == true ? SoftTint.Tint(t, 0.62, 0.34) : SoftTint.Tint(t, 0.30, 0.12))
+            : selected?.Invoke() == true
+                ? new SolidColorBrush(Color.FromArgb(120, accentColor.R, accentColor.G, accentColor.B))
+                : accent ? new SolidColorBrush(Color.FromArgb(90, accentColor.R, accentColor.G, accentColor.B)) : SoftTint.Glass(30);
+        Brush Hover() => tint is { } t2
+            ? SoftTint.Tint(t2, 0.50, 0.26)
+            : accent || selected?.Invoke() == true
+                ? new SolidColorBrush(Color.FromArgb(140, accentColor.R, accentColor.G, accentColor.B))
+                : SoftTint.Glass(58);
         var button = new Border
         {
-            CornerRadius = new CornerRadius(9),
+            CornerRadius = new CornerRadius(10),
             Margin = new Thickness(2),
-            Background = new SolidColorBrush(Idle()),
+            Background = Idle(),
+            BorderBrush = SoftTint.TileRim(),
+            BorderThickness = new Thickness(1),
             Cursor = Cursors.Hand,
             Child = content
         };
@@ -1776,8 +1912,8 @@ public sealed class IslandWindow : Window
             press.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Spring(press.ScaleX, 1, spec));
             press.BeginAnimation(ScaleTransform.ScaleYProperty, Motion.Spring(press.ScaleY, 1, spec));
         }
-        button.MouseEnter += (_, _) => button.Background = new SolidColorBrush(Hover());
-        button.MouseLeave += (_, _) => { button.Background = new SolidColorBrush(Idle()); Release(Motion.Snappy); };
+        button.MouseEnter += (_, _) => button.Background = Hover();
+        button.MouseLeave += (_, _) => { button.Background = Idle(); Release(Motion.Snappy); };
         button.PreviewMouseDown += (_, e) =>
         {
             e.Handled = true;
@@ -1888,8 +2024,10 @@ public sealed class IslandWindow : Window
         tokenHost.Children.Add(_mcPlaceholder);
         var tokenField = new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(28, 255, 255, 255)),
-            CornerRadius = new CornerRadius(9),
+            Background = SoftTint.Glass(24),
+            BorderBrush = SoftTint.TileRim(),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(11),
             Padding = new Thickness(10, 3, 8, 3),
             Height = 54,
             Child = tokenHost
@@ -1917,7 +2055,7 @@ public sealed class IslandWindow : Window
                 Text = CalcCodes[idx], FontSize = 10.5, FontFamily = LabelFont, Foreground = Brushes.White,
                 Margin = new Thickness(3, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center
             });
-            _mcChips[i] = MakeMcButton(label, () => McAddCurrency(idx), selected: () => _mcShowResult && _mcResultCurrency == idx);
+            _mcChips[i] = MakeMcButton(label, () => McAddCurrency(idx), selected: () => _mcShowResult && _mcResultCurrency == idx, tint: CalcAccent(idx));
             chips.Children.Add(_mcChips[i]);
         }
         root.Children.Add(chips);
@@ -2013,8 +2151,10 @@ public sealed class IslandWindow : Window
         _mcResultRow = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         var resultField = new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(16, 255, 255, 255)),
-            CornerRadius = new CornerRadius(9),
+            Background = SoftTint.Glass(14),
+            BorderBrush = SoftTint.TileRim(),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(11),
             Padding = new Thickness(10, 0, 8, 0),
             Height = 34,
             Margin = new Thickness(0, 4, 0, 0)
@@ -2030,16 +2170,12 @@ public sealed class IslandWindow : Window
             RenderTransformOrigin = new Point(0, 0.5),
             RenderTransform = _mcWipeScale
         };
-        var resultGrid = new Grid { Margin = new Thickness(0, 0, 72, 0) };
+        var resultGrid = new Grid();
         resultGrid.Children.Add(_mcResultHint);
         resultGrid.Children.Add(_mcResultRow);
         var resultOuter = new Grid();
         resultOuter.Children.Add(_mcWipe);
         resultOuter.Children.Add(resultGrid);
-        var mcBankChip = BuildBankChip();
-        mcBankChip.HorizontalAlignment = HorizontalAlignment.Right;
-        mcBankChip.Margin = new Thickness(0, 0, -2, 0);
-        resultOuter.Children.Add(mcBankChip);
         resultField.Child = resultOuter;
         root.Children.Add(resultField);
 
@@ -2335,13 +2471,11 @@ public sealed class IslandWindow : Window
     {
         if (_mcResultRow == null) return;
 
-        var accent = Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent;
         for (var i = 0; i < _mcChips.Length; i++)
         {
             var selected = _mcShowResult && AllCurrencies[i] == _mcResultCurrency;
-            _mcChips[i].Background = new SolidColorBrush(selected
-                ? Color.FromArgb(120, accent.R, accent.G, accent.B)
-                : Color.FromArgb(34, 255, 255, 255));
+            var chipAccent = CalcAccent(AllCurrencies[i]);
+            _mcChips[i].Background = selected ? SoftTint.Tint(chipAccent, 0.62, 0.34) : SoftTint.Tint(chipAccent, 0.30, 0.12);
         }
 
         _mcResultRow.Children.Clear();
@@ -2502,29 +2636,37 @@ public sealed class IslandWindow : Window
 
         var chip = new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(24, 255, 255, 255)),
+            Background = SoftTint.Glass(24),
+            BorderBrush = SoftTint.TileRim(),
+            BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(12),
-            Padding = new Thickness(8, 4, 8, 4),
+            Padding = new Thickness(8, 3, 8, 3),
             Cursor = Cursors.Hand,
             VerticalAlignment = VerticalAlignment.Center,
             Child = content
         };
+        var chipTint = new SoftTint.TintHover(Colors.White, 0.34, 0.14, 0.46, 0.24);
 
         Action<int> refreshLocal = currency =>
         {
             symbolHost.Content = CurrencySymbol(currency);
             codeText.Text = CalcCodes[currency];
+            chipTint.SetAccent(CalcAccent(currency));
         };
-        refresh = refreshLocal;
-        refreshLocal(initial);
+        Action<int> apply = refreshLocal;
+        refresh = apply;
+        apply(initial);
+        chip.Background = chipTint.Brush;
+        chipTint.Attach(chip);
+        AttachPress(chip);
 
         var list = new StackPanel();
         var popupBorder = new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(250, 24, 24, 27)),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)),
+            Background = new SolidColorBrush(Color.FromArgb(252, 28, 28, 30)),
+            BorderBrush = SoftTint.TileRim(),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
+            CornerRadius = new CornerRadius(12),
             Child = list
         };
         var popup = new System.Windows.Controls.Primitives.Popup
@@ -2543,15 +2685,15 @@ public sealed class IslandWindow : Window
         {
             if (!popup.IsOpen || closing) return;
             closing = true;
-            chevronRotate.BeginAnimation(RotateTransform.AngleProperty, Motion.Spring(chevronRotate.Angle, 0, Motion.Snappy));
-            var shrink = Motion.Tween(1, 0, 170, new CubicEase { EasingMode = EasingMode.EaseIn });
+            chevronRotate.BeginAnimation(RotateTransform.AngleProperty, Motion.Tween(chevronRotate.Angle, 0, 120, Motion.OutStrong));
+            var shrink = Motion.Tween(1, 0, 110, Motion.OutStrong);
             shrink.Completed += (_, _) =>
             {
                 popup.IsOpen = false;
                 closing = false;
             };
             popupBorder.BeginAnimation(Reveal.FractionProperty, shrink);
-            Motion.Settle(450, () =>
+            Motion.Settle(260, () =>
             {
                 if (!closing) return;
                 popup.IsOpen = false;
@@ -2582,7 +2724,7 @@ public sealed class IslandWindow : Window
             item.MouseLeftButtonUp += (_, e) =>
             {
                 e.Handled = true;
-                refreshLocal(idx);
+                apply(idx);
                 onPick(idx);
                 CloseAnimated();
             };
@@ -2603,21 +2745,24 @@ public sealed class IslandWindow : Window
             popupBorder.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
             popupBorder.BeginAnimation(Reveal.FractionProperty, null);
             Reveal.SetFraction(popupBorder, 0);
-            popupBorder.BeginAnimation(Reveal.FractionProperty, Motion.Spring(0, 1, Motion.Soft));
-            chevronRotate.BeginAnimation(RotateTransform.AngleProperty, Motion.Spring(chevronRotate.Angle, 180, Motion.Bouncy));
+            popupBorder.BeginAnimation(Reveal.FractionProperty, Motion.Tween(0, 1, 170, Motion.OutStrong));
+            chevronRotate.BeginAnimation(RotateTransform.AngleProperty, Motion.Tween(chevronRotate.Angle, 180, 170, Motion.OutStrong));
             for (var i = 0; i < items.Count; i++)
                 items[i].Visibility = available == null || available(options[i]) ? Visibility.Visible : Visibility.Collapsed;
+            var step = 0;
             for (var i = 0; i < items.Count; i++)
             {
                 var translate = (TranslateTransform)items[i].RenderTransform;
                 items[i].BeginAnimation(OpacityProperty, null);
                 translate.BeginAnimation(TranslateTransform.YProperty, null);
+                if (items[i].Visibility != Visibility.Visible) continue;
                 items[i].Opacity = 0;
-                translate.Y = -8;
-                items[i].BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 280, delayMs: 40 + i * 32));
-                translate.BeginAnimation(TranslateTransform.YProperty, Motion.Tween(-8, 0, 280, delayMs: 40 + i * 32));
+                translate.Y = -4;
+                items[i].BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 130, Motion.OutStrong, delayMs: step * 18));
+                translate.BeginAnimation(TranslateTransform.YProperty, Motion.Tween(-4, 0, 150, Motion.OutStrong, delayMs: step * 18));
+                step++;
             }
-            Motion.Settle(900, () =>
+            Motion.Settle(420, () =>
             {
                 Motion.Clear(popupBorder, Reveal.FractionProperty, 1.0);
                 foreach (var item in items)
@@ -2908,12 +3053,12 @@ public sealed class IslandWindow : Window
         // value labels would land on top of each other. Spread any that are
         // within a label's height of each other, ordered by their natural Y,
         // instead of leaving them to overlap into unreadable mush.
-        const double minGap = 14;
-        const double maxTop = ChartHeight - 14;
+        const double minGap = 18;
+        const double maxTop = ChartHeight - 17;
         var order = new[] { 0, 1, 2 };
         Array.Sort(order, (a, b) => endY[a].CompareTo(endY[b]));
         var tops = new double[SeriesCount];
-        for (var s = 0; s < SeriesCount; s++) tops[s] = Math.Clamp(endY[s] - 7, 0, maxTop);
+        for (var s = 0; s < SeriesCount; s++) tops[s] = Math.Clamp(endY[s] - 8.5, 0, maxTop);
         for (var i = 1; i < order.Length; i++)
             tops[order[i]] = Math.Max(tops[order[i]], tops[order[i - 1]] + minGap);
         tops[order[^1]] = Math.Min(tops[order[^1]], maxTop);
@@ -2921,8 +3066,8 @@ public sealed class IslandWindow : Window
             tops[order[i]] = Math.Min(tops[order[i]], tops[order[i + 1]] - minGap);
         for (var s = 0; s < SeriesCount; s++)
         {
-            Canvas.SetLeft(_seriesValueLabel[s], ChartPlotWidth + 7);
-            Canvas.SetTop(_seriesValueLabel[s], tops[s]);
+            Canvas.SetLeft(_seriesValueTile[s], ChartPlotWidth + 8);
+            Canvas.SetTop(_seriesValueTile[s], tops[s]);
         }
 
         var n = points.Count;
@@ -2931,87 +3076,158 @@ public sealed class IslandWindow : Window
         _chartTodayGuide.X2 = lastX;
     }
 
-    // The only way to read an exact value for a specific date used to be
-    // "guess from where the curve is" - hovering now snaps to the nearest
-    // day's X and pops a tooltip with the real date and all three prices.
+    private bool _chartHoverActive;
+    private int _chartHoverIdx = -1;
+    private int _rangeHoverIdx = -1;
+    private bool _chartHoverHooked;
+    private bool _chartHoverMoving;
+    private readonly Ellipse[] _hoverDots = new Ellipse[SeriesCount];
+    private readonly double[] _hoverY = new double[SeriesCount];
+    private readonly double[] _targetY = new double[SeriesCount];
+    private double _hoverX, _targetX, _hoverBadge, _targetBadge, _startX, _startBadge;
+    private readonly double[] _startY = new double[SeriesCount];
+    private readonly double[] _chipLeft = new double[SeriesCount];
+    private readonly double[] _chipTop = new double[SeriesCount];
+    private readonly double[] _chipStartLeft = new double[SeriesCount];
+    private readonly double[] _chipStartTop = new double[SeriesCount];
+    private readonly double[] _chipTargetLeft = new double[SeriesCount];
+    private readonly double[] _chipTargetTop = new double[SeriesCount];
+    private TimeSpan _hoverLast, _hoverStart;
+    private const double HoverGlideMs = 170;
+    private readonly System.Diagnostics.Stopwatch _hoverClock = System.Diagnostics.Stopwatch.StartNew();
+
     private void OnChartCanvasMouseMove(object sender, MouseEventArgs e)
     {
-        if (_latestHistory is not { Count: > 0 } history) return;
+        if (_latestHistory is not { Count: > 0 } history || _seriesPoints[0] is not { Count: > 0 } pts0) return;
 
-        var n = history.Count;
+        var n = Math.Min(history.Count, pts0.Count);
         var step = n <= 1 ? 0 : ChartPlotWidth / (n - 1);
-        var pos = e.GetPosition(_chartCanvas);
-        var idx = step <= 0 ? 0 : (int)Math.Round(pos.X / step);
-        idx = Math.Clamp(idx, 0, n - 1);
+        var idx = step <= 0 ? 0 : Math.Clamp((int)Math.Round(e.GetPosition(_chartCanvas).X / step), 0, n - 1);
+        if (_chartHoverActive && idx == _chartHoverIdx) return;
 
-        var x = idx * step;
-        _chartHoverGuide.X1 = x;
-        _chartHoverGuide.X2 = x;
-        _chartHoverGuide.Visibility = Visibility.Visible;
-        SetHoveredMarkerIndex(idx);
-
-        var p = history[idx];
-
-        if (_chartCrosshairHover)
-        {
-            _chartTooltip.Visibility = Visibility.Hidden;
-            ShowHoverChips(idx, new[] { $"{p.UsdRub:0.00}", $"{p.EurRub:0.00}", $"{p.CnyRub:0.00}" });
-            return;
-        }
-
-        foreach (var chip in _hoverChips) chip.Visibility = Visibility.Hidden;
-        _tooltipDate.Text = p.Date.ToString("d MMMM", System.Globalization.CultureInfo.GetCultureInfo("en-US"));
-        _tooltipValues[0].Text = $"{p.UsdRub:0.0000}";
-        _tooltipValues[1].Text = $"{p.EurRub:0.0000}";
-        _tooltipValues[2].Text = $"{p.CnyRub:0.0000}";
-
-        _chartTooltip.Visibility = Visibility.Visible;
-        _chartTooltip.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        var tipWidth = _chartTooltip.DesiredSize.Width;
-        var left = Math.Clamp(x - tipWidth / 2, 0, ChartWidth - tipWidth);
-        Canvas.SetLeft(_chartTooltip, left);
-        Canvas.SetTop(_chartTooltip, 2);
+        SetChartHoverTarget(idx, history, step);
     }
 
-    // Variant E: a small pill in each series' own color sitting just above
-    // its point at the hovered X - no shared box, so it reads as part of the
-    // line itself rather than a separate UI panel. When two or three lines
-    // sit close together at that X, docking each chip to its own raw point
-    // makes them overlap into unreadable mush - so all three are laid out
-    // together here: sorted top-to-bottom by their actual line position,
-    // then any chip too close to the one above it gets pushed further DOWN
-    // (never sideways/up), so a tight cluster fans out into a clean stack
-    // instead of a pile.
-    private void ShowHoverChips(int pointIndex, string[] values)
+    private void SetChartHoverTarget(int idx, List<CbrHistoryPoint> history, double step)
     {
-        if (_seriesPoints[0] is not { Count: > 0 } pts0 || pointIndex >= pts0.Count) return;
-
-        var x = pts0[pointIndex].X;
-        var rawY = new double[SeriesCount];
-        var widths = new double[SeriesCount];
-        var heights = new double[SeriesCount];
-
+        _chartHoverIdx = idx;
+        var p = history[idx];
+        var labels = new[] { $"{p.UsdRub:0.00}", $"{p.EurRub:0.00}", $"{p.CnyRub:0.00}" };
         for (var s = 0; s < SeriesCount; s++)
         {
-            _hoverChipTexts[s].Text = values[s];
-            var chip = _hoverChips[s];
-            chip.Visibility = Visibility.Visible;
-            chip.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-            widths[s] = chip.DesiredSize.Width;
-            heights[s] = chip.DesiredSize.Height;
-            rawY[s] = _seriesPoints[s] is { } pts && pointIndex < pts.Count ? pts[pointIndex].Y : 0;
+            _hoverChipTexts[s].Text = labels[s];
+            _targetY[s] = _seriesPoints[s] is { } pts && idx < pts.Count ? pts[idx].Y : 0;
+        }
+
+        _axisBadgeText.Text = p.Date.ToString("dd.MM");
+        _axisBadge.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var badgeWidth = _axisBadge.DesiredSize.Width;
+        _targetX = idx * step;
+        _targetBadge = Math.Clamp(_targetX - badgeWidth / 2, 0, ChartPlotWidth - badgeWidth);
+        for (var d = 0; d < ChartDays; d++) _chartDateLabels[d].Opacity = d == idx ? 0 : 1;
+        ComputeChipTargets(_targetX, _targetY);
+
+        if (!_chartHoverActive)
+        {
+            _chartHoverActive = true;
+            _hoverX = _targetX;
+            _hoverBadge = _targetBadge;
+            Array.Copy(_targetY, _hoverY, SeriesCount);
+            Array.Copy(_chipTargetLeft, _chipLeft, SeriesCount);
+            Array.Copy(_chipTargetTop, _chipTop, SeriesCount);
+            _chartHoverGuide.Visibility = Visibility.Visible;
+            foreach (var dot in _hoverDots) dot.Visibility = Visibility.Visible;
+            foreach (var chip in _hoverChips) chip.Visibility = Visibility.Visible;
+            _axisBadge.Visibility = Visibility.Visible;
+            foreach (var tile in _seriesValueTile) tile.Opacity = 0;
+            _hoverLast = _hoverClock.Elapsed;
+            ApplyChartHoverPositions();
+        }
+
+        _startX = _hoverX;
+        _startBadge = _hoverBadge;
+        Array.Copy(_hoverY, _startY, SeriesCount);
+        Array.Copy(_chipLeft, _chipStartLeft, SeriesCount);
+        Array.Copy(_chipTop, _chipStartTop, SeriesCount);
+        _hoverStart = _hoverClock.Elapsed;
+        _chartHoverMoving = true;
+        if (_chartHoverHooked) return;
+        _chartHoverHooked = true;
+        _hoverLast = _hoverClock.Elapsed;
+        CompositionTarget.Rendering += OnChartHoverFrame;
+    }
+
+    private void OnChartHoverFrame(object? sender, EventArgs e)
+    {
+        if (_chartHoverMoving)
+        {
+            var u = Math.Clamp((_hoverClock.Elapsed - _hoverStart).TotalMilliseconds / HoverGlideMs, 0, 1);
+            var eased = 1 - Math.Pow(1 - u, 3);
+            _hoverX = _startX + (_targetX - _startX) * eased;
+            _hoverBadge = _startBadge + (_targetBadge - _startBadge) * eased;
+            for (var s = 0; s < SeriesCount; s++)
+            {
+                _hoverY[s] = _startY[s] + (_targetY[s] - _startY[s]) * eased;
+                _chipLeft[s] = _chipStartLeft[s] + (_chipTargetLeft[s] - _chipStartLeft[s]) * eased;
+                _chipTop[s] = _chipStartTop[s] + (_chipTargetTop[s] - _chipStartTop[s]) * eased;
+            }
+            if (u >= 1) _chartHoverMoving = false;
+            ApplyChartHoverPositions();
+        }
+
+        if (_chartHoverMoving || _chartHoverActive) return;
+        CompositionTarget.Rendering -= OnChartHoverFrame;
+        _chartHoverHooked = false;
+    }
+    private void ApplyChartHoverPositions()
+    {
+        Canvas.SetLeft(_chartHoverGuide, _hoverX);
+        for (var s = 0; s < SeriesCount; s++)
+        {
+            Canvas.SetLeft(_hoverDots[s], _hoverX - 4.25);
+            Canvas.SetTop(_hoverDots[s], _hoverY[s] - 4.25);
+        }
+        for (var s = 0; s < SeriesCount; s++)
+        {
+            Canvas.SetLeft(_hoverChips[s], _chipLeft[s]);
+            Canvas.SetTop(_hoverChips[s], _chipTop[s]);
+        }
+        Canvas.SetLeft(_axisBadge, _hoverBadge);
+        Canvas.SetTop(_axisBadge, -1.5);
+    }
+
+    private void ClearChartHover()
+    {
+        _chartHoverActive = false;
+        _chartHoverMoving = false;
+        _chartHoverIdx = -1;
+        if (_chartHoverHooked)
+        {
+            CompositionTarget.Rendering -= OnChartHoverFrame;
+            _chartHoverHooked = false;
+        }
+
+        _chartHoverGuide.Visibility = Visibility.Hidden;
+        foreach (var dot in _hoverDots) dot.Visibility = Visibility.Hidden;
+        foreach (var chip in _hoverChips) chip.Visibility = Visibility.Hidden;
+        _axisBadge.Visibility = Visibility.Hidden;
+        foreach (var label in _chartDateLabels) label.Opacity = 1;
+        foreach (var tile in _seriesValueTile) tile.Opacity = 1;
+    }
+    private void ComputeChipTargets(double x, double[] rawY)
+    {
+        var widths = new double[SeriesCount];
+        var heights = new double[SeriesCount];
+        for (var s = 0; s < SeriesCount; s++)
+        {
+            _hoverChips[s].Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            widths[s] = _hoverChips[s].DesiredSize.Width;
+            heights[s] = _hoverChips[s].DesiredSize.Height;
         }
 
         var order = new[] { 0, 1, 2 };
         Array.Sort(order, (a, b) => rawY[a].CompareTo(rawY[b]));
 
-        // Stack each chip just above its own point, pushing later ones down
-        // when they'd overlap the one above. Near a shared peak the natural
-        // chain can run off the bottom of the chart - shifting the WHOLE
-        // chain up by the overflow (instead of clamping only the last chip
-        // individually) keeps every chip's spacing intact instead of
-        // dumping the last one back on top of its neighbor and hiding it
-        // behind it in z-order.
         const double gap = 3;
         var tops = new double[SeriesCount];
         var prevBottom = double.NegativeInfinity;
@@ -3036,37 +3252,10 @@ public sealed class IslandWindow : Window
 
         foreach (var s in order)
         {
-            Canvas.SetLeft(_hoverChips[s], Math.Clamp(x - widths[s] / 2, 0, ChartWidth - widths[s]));
-            Canvas.SetTop(_hoverChips[s], tops[s]);
+            _chipTargetLeft[s] = Math.Clamp(x - widths[s] / 2, 0, ChartWidth - widths[s]);
+            _chipTargetTop[s] = tops[s];
         }
     }
-
-    // Confirms which day the tooltip is showing by popping the three dots at
-    // that X a little bigger, with a white ring - without this the tooltip
-    // number and the actual point it came from were only linked by the
-    // vertical guide line, easy to lose track of on a small chart.
-    private void SetHoveredMarkerIndex(int hoveredIndex)
-    {
-        for (var s = 0; s < SeriesCount; s++)
-        {
-            for (var d = 0; d < ChartDays; d++)
-            {
-                var marker = _seriesMarkers[s][d];
-                if (marker.Visibility != Visibility.Visible) continue;
-                var cx = Canvas.GetLeft(marker) + marker.Width / 2;
-                var cy = Canvas.GetTop(marker) + marker.Height / 2;
-                var isHovered = d == hoveredIndex;
-                var size = isHovered ? 8.5 : 5.5;
-                marker.Width = size;
-                marker.Height = size;
-                Canvas.SetLeft(marker, cx - size / 2);
-                Canvas.SetTop(marker, cy - size / 2);
-                marker.StrokeThickness = isHovered ? 2 : 1.2;
-                marker.Stroke = new SolidColorBrush(isHovered ? Colors.White : Color.FromRgb(12, 12, 14));
-            }
-        }
-    }
-
     // Draws the line/fill/markers for one series and reports back the raw
     // (pre-collision-avoidance) Y of its last point, so the caller can space
     // out value labels across all three series at once.
@@ -3076,6 +3265,7 @@ public sealed class IslandWindow : Window
         var fill = _seriesFill[index];
         var markers = _seriesMarkers[index];
         var label = _seriesValueLabel[index];
+        _seriesValueTile[index].Visibility = values.Count == 0 ? Visibility.Hidden : Visibility.Visible;
 
         if (values.Count == 0)
         {
@@ -3147,8 +3337,10 @@ public sealed class IslandWindow : Window
                 var p2 = points[i + 1];
                 var p3 = i + 2 < points.Count ? points[i + 2] : p2;
 
-                var c1 = new Point(p1.X + (p2.X - p0.X) / 6.0, p1.Y + (p2.Y - p0.Y) / 6.0);
-                var c2 = new Point(p2.X - (p3.X - p1.X) / 6.0, p2.Y - (p3.Y - p1.Y) / 6.0);
+                var lo = Math.Min(p1.Y, p2.Y);
+                var hi = Math.Max(p1.Y, p2.Y);
+                var c1 = new Point(p1.X + (p2.X - p0.X) / 6.0, Math.Clamp(p1.Y + (p2.Y - p0.Y) / 6.0, lo, hi));
+                var c2 = new Point(p2.X - (p3.X - p1.X) / 6.0, Math.Clamp(p2.Y - (p3.Y - p1.Y) / 6.0, lo, hi));
                 figure.Segments.Add(new BezierSegment(c1, c2, p2, true));
             }
         }
@@ -3172,7 +3364,7 @@ public sealed class IslandWindow : Window
         _pos = new PositionState();
         ApplyPosition();
         _pos.Left = Left;
-        _pos.Top = Top;
+        _pos.Top = LogicalTop;
         _pos.AnchorH = HorizontalContentAlignment.ToString();
         _pos.AnchorV = VerticalContentAlignment.ToString();
         SavePosition();
@@ -3186,9 +3378,11 @@ public sealed class IslandWindow : Window
 
         for (var i = 0; i < TabCount; i++)
         {
-            _dots[i].Fill = i == _currentTab
-                ? Brushes.White
-                : new SolidColorBrush(Color.FromArgb(90, 255, 255, 255));
+            var target = i == _currentTab ? Color.FromArgb(255, 255, 255, 255) : Color.FromArgb(90, 255, 255, 255);
+            if (_dots[i].Fill is SolidColorBrush { IsFrozen: false } brush)
+                brush.BeginAnimation(SolidColorBrush.ColorProperty, new System.Windows.Media.Animation.ColorAnimation(target, Motion.Span(200)) { EasingFunction = Motion.OutStrong });
+            else
+                _dots[i].Fill = new SolidColorBrush(target);
         }
 
         if (_tabPersistenceReady)
@@ -3199,6 +3393,7 @@ public sealed class IslandWindow : Window
 
         RefreshHistoryIfStale();
         if (_currentTab == RangeTabIndex && _rangePoints is not { Count: >= 2 }) _ = LoadRangeAsync();
+        UpdateStateOverlay();
     }
 
     // Small glyphs shown on the collapsed pill for whichever tab was last
@@ -3241,17 +3436,37 @@ public sealed class IslandWindow : Window
     // Plain currency glyphs ($/€/¥) are ordinary font characters, not
     // multi-color emoji, so they render fine as text and don't need a
     // vector icon.
-    private static StackPanel BuildChip(string symbol, string value, Color accent, bool first, int trend) =>
+    private static void AttachPress(FrameworkElement element, double scale = 0.96)
+    {
+        var press = new ScaleTransform(1, 1);
+        element.RenderTransformOrigin = new Point(0.5, 0.5);
+        element.RenderTransform = press;
+
+        void To(double value, int ms)
+        {
+            press.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Tween(press.ScaleX, value, ms, Motion.OutStrong));
+            press.BeginAnimation(ScaleTransform.ScaleYProperty, Motion.Tween(press.ScaleY, value, ms, Motion.OutStrong));
+        }
+
+        element.AddHandler(UIElement.PreviewMouseLeftButtonDownEvent, new MouseButtonEventHandler((_, _) => To(scale, 80)), true);
+        element.AddHandler(UIElement.PreviewMouseLeftButtonUpEvent, new MouseButtonEventHandler((_, _) => To(1, 170)), true);
+        element.MouseLeave += (_, _) =>
+        {
+            if (press.ScaleX < 0.999) To(1, 170);
+        };
+    }
+
+    private static FrameworkElement BuildChip(string symbol, string value, Color accent, bool first, int trend) =>
         BuildChipCore(new TextBlock
         {
             Text = symbol,
-            Foreground = new SolidColorBrush(accent),
-            FontSize = 15,
+            Foreground = new SolidColorBrush(SoftTint.Light(accent)),
+            FontSize = 14,
             FontWeight = FontWeights.Bold,
             FontFamily = ValueFont,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
-        }, value, first, trend);
+        }, value, accent, first, trend);
 
     // A small filled triangle for a day-over-day move, or a thin flat dash
     // when the rate didn't change - drawn instead of a text arrow character
@@ -3283,13 +3498,12 @@ public sealed class IslandWindow : Window
         };
     }
 
-    private static StackPanel BuildChipCore(FrameworkElement icon, string value, bool first, int trend)
+    private static FrameworkElement BuildChipCore(FrameworkElement icon, string value, Color accent, bool first, int trend)
     {
         var chip = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(first ? 0 : 9, 0, 0, 0)
+            VerticalAlignment = VerticalAlignment.Center
         };
         // A fixed-size slot for the icon/symbol, centered inside it, so a
         // 14px vector glyph and a 15px bold currency character both land on
@@ -3298,7 +3512,7 @@ public sealed class IslandWindow : Window
         // what read as "icon and text aren't symmetric".
         var iconSlot = new Grid
         {
-            Width = 16,
+            Width = 12,
             Height = 16,
             VerticalAlignment = VerticalAlignment.Center
         };
@@ -3327,13 +3541,18 @@ public sealed class IslandWindow : Window
         {
             Text = value,
             Foreground = Brushes.White,
-            FontSize = 17,
+            FontSize = 15,
             FontWeight = FontWeights.SemiBold,
             FontFamily = ValueFont,
             Margin = new Thickness(3, 0, 0, 0),
             VerticalAlignment = VerticalAlignment.Center
         });
-        return chip;
+
+        var tile = SoftTint.Tile(accent, 12, new Thickness(8, 0, 10, 0), chip, 0.38, 0.16);
+        tile.Height = 26;
+        tile.Margin = new Thickness(first ? 0 : 5, 0, 0, 0);
+        tile.VerticalAlignment = VerticalAlignment.Center;
+        return tile;
     }
 
     private FrameworkElement BuildCollapsedRatesRow()
@@ -3356,7 +3575,7 @@ public sealed class IslandWindow : Window
 
         var flagButton = new Border
         {
-            Background = Brushes.Transparent, Cursor = Cursors.Hand, Padding = new Thickness(2, 4, 4, 4),
+            Background = Brushes.Transparent, Cursor = Cursors.Hand, Padding = new Thickness(0, 4, 4, 4),
             Margin = new Thickness(0, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center,
             Child = BuildFlag(_rates.Bank)
         };
@@ -3417,23 +3636,178 @@ public sealed class IslandWindow : Window
         var newIndex = ((index % TabCount) + TabCount) % TabCount;
         if (newIndex == _currentTab) return;
 
-        _tabAnimating = true;
-        var fadeOut = new DoubleAnimation(_tabHost.Opacity, 0, TimeSpan.FromMilliseconds(90))
-        {
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
-        };
-        fadeOut.Completed += (_, _) =>
+        CrossfadeTab(() =>
         {
             SetTab(newIndex);
             ResizeForTab(newIndex);
-            var fadeIn = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140))
-            {
-                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-            };
+            if (newIndex == ChartTabIndex) RevealChart();
+        });
+    }
+
+    private void CrossfadeTab(Action swap)
+    {
+        if (_tabAnimating) return;
+        _tabAnimating = true;
+
+        var fadeOut = Motion.Tween(_tabHost.Opacity, 0, 90, Motion.OutStrong);
+        fadeOut.Completed += (_, _) =>
+        {
+            swap();
+            var fadeIn = Motion.Tween(0, 1, 200, Motion.OutStrong);
             fadeIn.Completed += (_, _) => _tabAnimating = false;
+            _hostShift.BeginAnimation(TranslateTransform.YProperty, Motion.Tween(6, 0, 220, Motion.OutStrong));
             _tabHost.BeginAnimation(OpacityProperty, fadeIn);
         };
+        _hostShift.BeginAnimation(TranslateTransform.YProperty, Motion.Tween(_hostShift.Y, -3, 90, Motion.OutStrong));
         _tabHost.BeginAnimation(OpacityProperty, fadeOut);
+        Motion.Settle(700, () => _tabAnimating = false);
+    }
+
+    private static void FadeTo(UIElement element, double target, int ms)
+    {
+        element.BeginAnimation(OpacityProperty, null);
+        element.Opacity = target;
+        element.Visibility = target > 0 ? Visibility.Visible : Visibility.Hidden;
+    }
+
+    private static void AnimateOpacity(UIElement element, double target, int ms)
+    {
+        element.BeginAnimation(OpacityProperty, null);
+        element.Opacity = target;
+    }
+    private static void Place(FrameworkElement element, double left, double top, bool snap, int ms = 90)
+    {
+        if (element.RenderTransform is not TranslateTransform shift)
+        {
+            shift = new TranslateTransform();
+            element.RenderTransform = shift;
+        }
+
+        var oldLeft = Canvas.GetLeft(element);
+        var oldTop = Canvas.GetTop(element);
+        var fromX = double.IsNaN(oldLeft) ? 0 : oldLeft + shift.X - left;
+        var fromY = double.IsNaN(oldTop) ? 0 : oldTop + shift.Y - top;
+        Canvas.SetLeft(element, left);
+        Canvas.SetTop(element, top);
+
+        shift.BeginAnimation(TranslateTransform.XProperty, null);
+        shift.BeginAnimation(TranslateTransform.YProperty, null);
+        if (snap || !Motion.Enabled || (Math.Abs(fromX) < 0.01 && Math.Abs(fromY) < 0.01))
+        {
+            shift.X = 0;
+            shift.Y = 0;
+            return;
+        }
+
+        shift.X = fromX;
+        shift.Y = fromY;
+        var moveX = Motion.Tween(fromX, 0, ms, Motion.OutStrong);
+        var moveY = Motion.Tween(fromY, 0, ms, Motion.OutStrong);
+        Timeline.SetDesiredFrameRate(moveX, 30);
+        Timeline.SetDesiredFrameRate(moveY, 30);
+        shift.BeginAnimation(TranslateTransform.XProperty, moveX);
+        shift.BeginAnimation(TranslateTransform.YProperty, moveY);
+    }
+    private void CrossfadeCollapsed(Action swap)
+    {
+        var fadeOut = Motion.Tween(_collapsedIcon.Opacity, 0, 80, Motion.OutStrong);
+        fadeOut.Completed += (_, _) =>
+        {
+            swap();
+            _collapsedIcon.BeginAnimation(OpacityProperty, Motion.Tween(0, 1, 190, Motion.OutStrong));
+        };
+        _collapsedIcon.BeginAnimation(OpacityProperty, fadeOut);
+    }
+
+    private void CenterStateContent()
+    {
+        if (_stateOverlay == null || _stateOverlay.ActualWidth <= 0 || !_stateOverlay.IsLoaded) return;
+        var center = _stateOverlay.TranslatePoint(new Point(_stateOverlay.ActualWidth / 2, 0), _shell).X;
+        ((TranslateTransform)_stateContent.RenderTransform).X = ExpandedWidth / 2 - center;
+    }
+
+    private void RetryLoad()
+    {
+        if (_currentTab == RangeTabIndex)
+        {
+            _ = LoadRangeAsync();
+            return;
+        }
+
+        _historyFetchedAt = DateTime.MinValue;
+        RefreshHistoryIfStale();
+    }
+
+    private System.Windows.Threading.DispatcherTimer? _loadingGrace;
+    private bool _loadingGraceDone;
+
+    private void OnLoadingGraceTick(object? sender, EventArgs e)
+    {
+        _loadingGrace?.Stop();
+        _loadingGraceDone = true;
+        UpdateStateOverlay();
+    }
+
+    private void UpdateStateOverlay()
+    {
+        if (_stateOverlay == null || _headerSpinner == null) return;
+
+        var range = _currentTab == RangeTabIndex;
+        string mode;
+        if (range) mode = _rangePoints == null ? "loading" : _rangePoints.Count < 2 ? "empty" : "none";
+        else mode = _latestHistory != null ? "none" : _fetching > 0 ? "loading" : "error";
+
+        _headerSpinner.Visibility = _fetching > 0 && mode == "none" ? Visibility.Visible : Visibility.Collapsed;
+
+        var hideHost = mode != "none" && !range;
+        for (var i = 0; i < _tabViews.Length; i++)
+        {
+            if (_tabViews[i] == null) continue;
+            var target = i == _currentTab && hideHost ? 0.0 : 1.0;
+            if (Math.Abs(_tabViews[i].Opacity - target) < 0.01) continue;
+            _tabViews[i].BeginAnimation(OpacityProperty, Motion.Tween(_tabViews[i].Opacity, target, target > 0 ? 200 : 110, Motion.OutStrong));
+        }
+
+        if (mode != "loading")
+        {
+            _loadingGrace?.Stop();
+            _loadingGraceDone = false;
+        }
+        else if (_overlayMode == "none" && !_loadingGraceDone)
+        {
+            _loadingGrace ??= new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
+            _loadingGrace.Tick -= OnLoadingGraceTick;
+            _loadingGrace.Tick += OnLoadingGraceTick;
+            if (!_loadingGrace.IsEnabled) _loadingGrace.Start();
+            return;
+        }
+
+        if (mode == _overlayMode) return;
+        _overlayMode = mode;
+
+        _stateSpinner.Visibility = mode == "loading" ? Visibility.Visible : Visibility.Collapsed;
+        var message = mode is "error" or "empty";
+        _stateText.Visibility = message ? Visibility.Visible : Visibility.Collapsed;
+        _stateRetry.Visibility = message ? Visibility.Visible : Visibility.Collapsed;
+        if (mode == "error") _stateText.Text = $"Can't reach {_rates.Name}";
+        else if (mode == "empty") _stateText.Text = "No data for this period";
+
+        if (mode != "none")
+        {
+            _stateOverlay.Visibility = Visibility.Visible;
+            _stateOverlay.BeginAnimation(OpacityProperty, Motion.Tween(_stateOverlay.Opacity, 1, 180, Motion.OutStrong));
+            _stateOverlay.UpdateLayout();
+            CenterStateContent();
+        }
+        else
+        {
+            var fade = Motion.Tween(_stateOverlay.Opacity, 0, 120, Motion.OutStrong);
+            fade.Completed += (_, _) =>
+            {
+                if (_overlayMode == "none") _stateOverlay.Visibility = Visibility.Collapsed;
+            };
+            _stateOverlay.BeginAnimation(OpacityProperty, fade);
+        }
     }
 
     // PointToScreen/PointFromScreen return physical pixels while Window.Left/
@@ -3561,7 +3935,7 @@ public sealed class IslandWindow : Window
         _dragging = false;
         _shell.CaptureMouse();
         _dragMouseStart = GetCursorScreenDip();
-        _dragWindowStart = new Point(Left, Top);
+        _dragWindowStart = new Point(Left, LogicalTop);
         _dragBaseH = HorizontalContentAlignment;
         _dragBaseV = VerticalContentAlignment;
         e.Handled = true;
@@ -3640,9 +4014,8 @@ public sealed class IslandWindow : Window
             if (!withinAnyRadius) _snapArmed = true;
 
             var (clampedLeft, clampedTop) = ClampWindowPosition(rawLeft, rawTop);
-            if (Math.Abs(clampedTop - Top) > 1) DebugTrace($"Drag MOVE Top jump {Top:F1} -> {clampedTop:F1} (rawTop={rawTop:F1} curH={Height:F1})");
             Left = clampedLeft;
-            Top = clampedTop;
+            LogicalTop = clampedTop;
         }
         finally
         {
@@ -3679,9 +4052,9 @@ public sealed class IslandWindow : Window
 
     private void ClampToScreen()
     {
-        var (clampedLeft, clampedTop) = ClampWindowPosition(Left, Top);
+        var (clampedLeft, clampedTop) = ClampWindowPosition(Left, LogicalTop);
         Left = clampedLeft;
-        Top = clampedTop;
+        LogicalTop = clampedTop;
     }
 
     private void OnShellMouseUp(object sender, MouseButtonEventArgs e)
@@ -3699,7 +4072,7 @@ public sealed class IslandWindow : Window
         if (_pinned)
         {
             _pos.Left = Left;
-            _pos.Top = Top;
+            _pos.Top = LogicalTop;
             _pos.AnchorH = HorizontalContentAlignment.ToString();
             _pos.AnchorV = VerticalContentAlignment.ToString();
             SavePosition();
@@ -3728,7 +4101,7 @@ public sealed class IslandWindow : Window
         var pillWidth = GetCollapsedWidth();
         var pillHeight = CollapsedHeight;
         var pillLeft = PillLeftFromWindow(Left, pillWidth);
-        var pillTop = PillTopFromWindow(Top, pillHeight, pillHeight);
+        var pillTop = LogicalTop;
 
         var docked = false;
         foreach (var (point, radius, h, v) in GetSnapPoints())
@@ -3740,7 +4113,7 @@ public sealed class IslandWindow : Window
             {
                 SetAnchor(h, v);
                 Left = point.X;
-                Top = point.Y;
+                LogicalTop = point.Y;
                 docked = true;
                 break;
             }
@@ -3752,7 +4125,7 @@ public sealed class IslandWindow : Window
         if (!docked) UpdateGrowthAlignment();
 
         _pos.Left = Left;
-        _pos.Top = Top;
+        _pos.Top = LogicalTop;
         _pos.AnchorH = HorizontalContentAlignment.ToString();
         _pos.AnchorV = VerticalContentAlignment.ToString();
         SavePosition();
@@ -3839,27 +4212,11 @@ public sealed class IslandWindow : Window
         _content.Visibility = Visibility.Visible;
         _settingsButton.Visibility = Visibility.Visible;
         _pinButton.Visibility = Visibility.Visible;
+        _bankHeaderChip.Visibility = Visibility.Visible;
 
-        // The real window only ever needs to be as tall as whichever tab
-        // needs the most room (ExpandedHeight) while the pill is expanded
-        // at ALL - which tab happens to be showing is purely a _shell-level
-        // concern once the window is already that size. Growing the window
-        // to the max here, once, means every later tab switch (see
-        // ResizeForTab) never touches the HWND again for as long as the
-        // pill stays expanded - a native resize on every single scroll tick
-        // was what actually made tab-switching choppy (chasing the
-        // animation with a synchronous Win32 call every few milliseconds is
-        // real OS-level work, not just a compositor transform), not the
-        // shell's own WPF animation.
-        //
-        // Snapped, not animated (see SnapWindowHeight) - and happens right
-        // here, before ResizeForTab even starts _shell moving, so nothing
-        // else is animating anywhere in the window at the moment this
-        // native resize happens.
         _hoverZoneWidth = ExpandedWidth;
         _hoverZoneHeight = ExpandedHeight;
         _resizingTab = true;
-        SnapWindowHeight(ExpandedHeight);
 
         ResizeForTab(_currentTab);
         AnimateContentOpacity(1);
@@ -3932,27 +4289,13 @@ public sealed class IslandWindow : Window
 
         AnimateShell(targetWidth, CollapsedHeight, CollapsedHeight / 2, duration, onHeightCompleted: () =>
         {
-            // SnapWindowHeight now animates (see its own comment) - the
-            // reconcile below waits for its onCompleted instead of running
-            // right after the call, same idea as ResizeForTab's own
-            // onHeightCompleted.
-            SnapWindowHeight(CollapsedHeight, duration, onCompleted: () =>
-            {
-                _resizingTab = false;
-                if (!_isExpanded) FitCollapsedPillWidth();
+            _resizingTab = false;
+            if (!_isExpanded) FitCollapsedPillWidth();
 
-                // Reconcile against whatever the cursor is ACTUALLY doing
-                // right now - a Enter/Leave that arrived while this resize
-                // was still guarded only updated _isMouseOverShell, it never
-                // got to act. Re-derived fresh (not just trusting the last
-                // Enter/Leave) for the same reason _shell.MouseEnter does -
-                // it's the truth this whole guard/reconcile dance exists to
-                // protect.
-                if (_dragging) return;
-                _isMouseOverShell = IsCursorOverHoverZone();
-                if (_isMouseOverShell && !_isExpanded) Expand();
-                else if (!_isMouseOverShell && _isExpanded) Collapse();
-            });
+            if (_dragging) return;
+            _isMouseOverShell = IsCursorOverHoverZone();
+            if (_isMouseOverShell && !_isExpanded) Expand();
+            else if (!_isMouseOverShell && _isExpanded) Collapse();
         });
     }
 
@@ -3976,7 +4319,7 @@ public sealed class IslandWindow : Window
         var pillHeight = CollapsedHeight;
 
         var pillLeft = PillLeftFromWindow(Left, pillWidth);
-        var pillTop = PillTopFromWindow(Top, pillHeight, pillHeight);
+        var pillTop = LogicalTop;
         var pillCenterX = pillLeft + pillWidth / 2;
         var pillCenterY = pillTop + pillHeight / 2;
 
@@ -3991,11 +4334,16 @@ public sealed class IslandWindow : Window
         if (newH == HorizontalContentAlignment && newV == VerticalContentAlignment) return;
 
         var newLeft = WindowLeftFromPill(pillLeft, pillWidth, newH);
-        var newTop = WindowTopFromPill(pillTop, pillHeight, newV, pillHeight);
 
         SetAnchor(newH, newV);
         Left = newLeft;
-        Top = newTop;
+        LogicalTop = pillTop;
+    }
+
+    private double LogicalTop
+    {
+        get => PillTopFromWindow(Top, CollapsedHeight, Height);
+        set => Top = WindowTopFromPill(value, CollapsedHeight, VerticalContentAlignment, Height);
     }
 
     // Re-expresses the pill's visible left/top edge in terms of the WINDOW's
@@ -4082,70 +4430,27 @@ public sealed class IslandWindow : Window
         if (_openDropdownBorder is { IsMouseOver: true }) return true;
         var cursor = GetCursorScreenDip();
         var pillLeft = PillLeftFromWindow(Left, _hoverZoneWidth);
-        var pillTop = PillTopFromWindow(Top, _hoverZoneHeight, _hoverZoneHeight);
+        var pillTop = PillTopFromWindow(Top, _hoverZoneHeight, Height);
         return cursor.X >= pillLeft && cursor.X <= pillLeft + _hoverZoneWidth
             && cursor.Y >= pillTop && cursor.Y <= pillTop + _hoverZoneHeight;
     }
+
+    private static int _traceWrites;
 
     private static void DebugTrace(string msg)
     {
         try
         {
-            File.AppendAllText(
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CurrencyIsland", "resize-trace.log"),
-                $"{DateTime.Now:HH:mm:ss.fff} {msg}{Environment.NewLine}");
+            var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CurrencyIsland", "resize-trace.log");
+            if (_traceWrites++ % 500 == 0 && File.Exists(path) && new FileInfo(path).Length > 262144)
+            {
+                var lines = File.ReadAllLines(path);
+                File.WriteAllLines(path, lines.Skip(lines.Length / 2));
+            }
+
+            File.AppendAllText(path, $"{DateTime.Now:HH:mm:ss.fff} {msg}{Environment.NewLine}");
         }
         catch { }
-    }
-
-    // Changes the WINDOW's own Height (the actual HWND, not just _shell) to
-    // exactly targetHeight, in one synchronous step - no animation, no
-    // timer, nothing else touching the window while this runs. Every
-    // attempt at spreading this over time (a DispatcherTimer driving
-    // repeated native resizes, then BeginAnimation on Top/Height directly)
-    // read as jerky regardless of mechanism or how it was clocked - tab
-    // switching (ResizeForTab), which never touches the window at ALL, is
-    // the one thing that's stayed smooth through all of this. So the
-    // window doesn't animate either, same as it doesn't during a tab
-    // switch - it just isn't touched while anything else is moving,
-    // period. Keeps whichever edge VerticalContentAlignment currently
-    // anchors to fixed in place, so the visible capsule doesn't jump
-    // sideways-of-center when its height changes.
-    // Animating this (BeginAnimation on Top/Height, same composition clock
-    // as _shell's own animation) was tried twice now, on the theory that a
-    // ~140 DIP instant jump inherently reads as a teleport no matter how
-    // cleanly it's presented. Still came back jerky both times. Confirmed
-    // (2026-09-28) this whole class of resize glitch - jerky when
-    // animated, a one-frame teleport when snapped, immune to every
-    // presentation-timing fix tried (DwmFlush, staged hide/reveal,
-    // software rendering) - is specific to THIS machine: an older build
-    // with none of that day's fixes ran clean on a different laptop. Back
-    // to the plain instant snap, which is at least the simplest, most
-    // "just like tab switching" version of this - once Windhawk (or
-    // whatever this machine's actual culprit is) is out of the way, this
-    // is the version that should read as clean as tab-switching already
-    // does.
-    private void SnapWindowHeight(double targetHeight, TimeSpan? duration = null, Action? onCompleted = null)
-    {
-        if (Math.Abs(Height - targetHeight) < 0.5)
-        {
-            onCompleted?.Invoke();
-            return;
-        }
-
-        var oldHeight = Height;
-        var newTop = VerticalContentAlignment switch
-        {
-            VerticalAlignment.Bottom => Top + oldHeight - targetHeight,
-            VerticalAlignment.Center => Top + (oldHeight - targetHeight) / 2,
-            _ => Top
-        };
-
-        DebugTrace($"SnapWindowHeight fromH={oldHeight:F1} toH={targetHeight:F1} fromTop={Top:F1} toTop={newTop:F1}");
-
-        Top = newTop;
-        Height = targetHeight;
-        onCompleted?.Invoke();
     }
 
     private void Collapse()
@@ -4155,14 +4460,6 @@ public sealed class IslandWindow : Window
         CloseDropdown();
         _collapsedIcon.Content = BuildCollapsedIcon(_currentTab);
         CollapseShellAndWindow(AnimDuration);
-        // Matched to AnimDuration (not the shorter default) so these are
-        // still actively fading at the exact moment the shell's shrink
-        // completes and SnapWindowHeight's brief invisible window-resize
-        // fires - with the default (shorter) duration, every other fade
-        // had already finished well before that point, leaving the
-        // window's own hide/resize/show as the only thing moving in an
-        // otherwise fully static frame, which is exactly what made it
-        // read as a stray blink instead of part of the same motion.
         AnimateContentOpacity(0, onCompleted: () => _content.Visibility = Visibility.Hidden, AnimDuration);
         AnimateSettingsButtonOpacity(0, onCompleted: HideCornerButtons, AnimDuration);
         AnimateCollapsedIconOpacity(1, AnimDuration);
@@ -4206,6 +4503,16 @@ public sealed class IslandWindow : Window
 
     private void HealCollapsedShape()
     {
+        if (_isExpanded && !_forcedHidden && (_content.Visibility != Visibility.Visible || _settingsButton.Visibility != Visibility.Visible))
+        {
+            _content.Visibility = Visibility.Visible;
+            _settingsButton.Visibility = Visibility.Visible;
+            _pinButton.Visibility = Visibility.Visible;
+            _bankHeaderChip.Visibility = Visibility.Visible;
+            AnimateContentOpacity(1);
+            AnimateSettingsButtonOpacity(1);
+        }
+
         if (_isExpanded || _resizingTab || _dragging || _forcedHidden)
         {
             _shapeMismatchTicks = 0;
@@ -4214,7 +4521,6 @@ public sealed class IslandWindow : Window
 
         var broken = Math.Abs(_shell.Height - CollapsedHeight) > 1
             || Math.Abs(_shell.Width - GetCollapsedWidth()) > 1
-            || Math.Abs(Height - CollapsedHeight) > 1
             || _shell.CornerRadius.TopLeft < CollapsedHeight / 2 - 1;
         if (!broken)
         {
@@ -4250,10 +4556,14 @@ public sealed class IslandWindow : Window
         _shell.BeginAnimation(Border.CornerRadiusProperty, radiusAnim);
     }
 
+    private int _contentAnimVersion;
+    private int _cornerAnimVersion;
+
     private void AnimateContentOpacity(double target, Action? onCompleted = null, TimeSpan? duration = null)
     {
         var anim = new DoubleAnimation(_content.Opacity, target, duration ?? TimeSpan.FromMilliseconds(150));
-        if (onCompleted != null) anim.Completed += (_, _) => onCompleted();
+        var version = ++_contentAnimVersion;
+        if (onCompleted != null) anim.Completed += (_, _) => { if (version == _contentAnimVersion) onCompleted(); };
         _content.BeginAnimation(OpacityProperty, anim);
     }
 
@@ -4271,15 +4581,18 @@ public sealed class IslandWindow : Window
     {
         _settingsButton.Visibility = Visibility.Hidden;
         _pinButton.Visibility = Visibility.Hidden;
+        _bankHeaderChip.Visibility = Visibility.Hidden;
     }
 
     private void AnimateSettingsButtonOpacity(double target, Action? onCompleted = null, TimeSpan? duration = null)
     {
         var length = duration ?? TimeSpan.FromMilliseconds(150);
         var anim = new DoubleAnimation(_settingsButton.Opacity, target, length);
-        if (onCompleted != null) anim.Completed += (_, _) => onCompleted();
+        var version = ++_cornerAnimVersion;
+        if (onCompleted != null) anim.Completed += (_, _) => { if (version == _cornerAnimVersion) onCompleted(); };
         _settingsButton.BeginAnimation(OpacityProperty, anim);
         _pinButton.BeginAnimation(OpacityProperty, new DoubleAnimation(_pinButton.Opacity, target, length));
+        _bankHeaderChip.BeginAnimation(OpacityProperty, new DoubleAnimation(_bankHeaderChip.Opacity, target, length));
     }
 
     private void AnimateOpacity(double target, Action? onDone)
@@ -4296,7 +4609,7 @@ public sealed class IslandWindow : Window
             var area = GetWorkAreaDip();
             SetAnchor(HorizontalAlignment.Right, VerticalAlignment.Top);
             Left = area.Right - EdgeMargin - Width;
-            Top = area.Top + TopEdgeMargin;
+            LogicalTop = area.Top + TopEdgeMargin;
             return;
         }
 
@@ -4304,7 +4617,7 @@ public sealed class IslandWindow : Window
             Enum.TryParse<HorizontalAlignment>(_pos.AnchorH, out var h) ? h : HorizontalAlignment.Right,
             Enum.TryParse<VerticalAlignment>(_pos.AnchorV, out var v) ? v : VerticalAlignment.Top);
         Left = _pos.Left;
-        Top = _pos.Top;
+        LogicalTop = _pos.Top;
         ClampToScreen();
     }
 
