@@ -11,22 +11,24 @@ namespace DynamicIsland;
 
 public sealed class SettingsWindow : FluentWindow
 {
-    private readonly IslandWindow _island;
+    private readonly IIsland _island;
     private SettingsData _data;
 
     private readonly StackPanel _pageGeneral = new();
+    private readonly StackPanel _pageAppearance = new() { Visibility = Visibility.Collapsed };
     private readonly StackPanel _pageAbout = new() { Visibility = Visibility.Collapsed };
+    private Border _navAppearance = null!;
     private Border _navGeneral = null!;
     private Border _navAbout = null!;
 
-    public SettingsWindow(IslandWindow island)
+    public SettingsWindow(IIsland island)
     {
         _island = island;
         _data = AppSettings.Load();
 
         Title = "Currency Island";
         Width = 460;
-        Height = 420;
+        Height = 560;
         ResizeMode = ResizeMode.NoResize;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         ExtendsContentIntoTitleBar = true;
@@ -60,10 +62,13 @@ public sealed class SettingsWindow : FluentWindow
 
         var navStack = new StackPanel();
         _navGeneral = BuildNavItem(SymbolRegular.Settings24, isFirst: true);
+        _navAppearance = BuildNavItem(SymbolRegular.PaintBrush24, isFirst: false);
         _navAbout = BuildNavItem(SymbolRegular.Info24, isFirst: false);
-        _navGeneral.MouseLeftButtonUp += (_, _) => ShowPage(general: true);
-        _navAbout.MouseLeftButtonUp += (_, _) => ShowPage(general: false);
+        _navGeneral.MouseLeftButtonUp += (_, _) => ShowPage(0);
+        _navAppearance.MouseLeftButtonUp += (_, _) => ShowPage(1);
+        _navAbout.MouseLeftButtonUp += (_, _) => ShowPage(2);
         navStack.Children.Add(_navGeneral);
+        navStack.Children.Add(_navAppearance);
         navStack.Children.Add(_navAbout);
         nav.Child = navStack;
         body.Children.Add(nav);
@@ -81,11 +86,21 @@ public sealed class SettingsWindow : FluentWindow
             Margin = new Thickness(0, 0, 0, 16)
         });
         _pageGeneral.Children.Add(BuildAutostartCard());
-        _pageGeneral.Children.Add(BuildAnimationsCard());
         _pageGeneral.Children.Add(BuildStartTabCard());
-        _pageGeneral.Children.Add(BuildThemeCard());
         _pageGeneral.Children.Add(BuildResetPositionCard());
         contentPanel.Children.Add(_pageGeneral);
+
+        _pageAppearance.Children.Add(new TextBlock
+        {
+            Text = "Look and feel of the island.",
+            Opacity = 0.6,
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 16)
+        });
+        _pageAppearance.Children.Add(BuildDesignCard());
+        _pageAppearance.Children.Add(BuildAnimationsCard());
+        contentPanel.Children.Add(_pageAppearance);
 
         _pageAbout.Children.Add(new TextBlock { Text = "Currency Island", FontSize = 18, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 4) });
         _pageAbout.Children.Add(new TextBlock { Text = "by Kiki", Opacity = 0.6, FontSize = 12, Margin = new Thickness(0, 0, 0, 16) });
@@ -121,7 +136,7 @@ public sealed class SettingsWindow : FluentWindow
         root.Children.Add(body);
         Content = root;
 
-        ShowPage(general: true);
+        ShowPage(0);
     }
 
     private Border BuildNavItem(SymbolRegular glyph, bool isFirst)
@@ -144,16 +159,38 @@ public sealed class SettingsWindow : FluentWindow
             }
         };
         border.MouseEnter += (_, _) => border.Background = new SolidColorBrush(Color.FromArgb(30, 0, 0, 0));
-        border.MouseLeave += (_, _) => ShowPage(_pageGeneral.Visibility == Visibility.Visible);
+        border.MouseLeave += (_, _) => ShowPage(_pageGeneral.Visibility == Visibility.Visible ? 0 : _pageAppearance.Visibility == Visibility.Visible ? 1 : 2);
         return border;
     }
 
-    private void ShowPage(bool general)
+    private void ShowPage(int page)
     {
-        _pageGeneral.Visibility = general ? Visibility.Visible : Visibility.Collapsed;
-        _pageAbout.Visibility = general ? Visibility.Collapsed : Visibility.Visible;
-        _navGeneral.Background = general ? new SolidColorBrush(Color.FromArgb(50, 0, 159, 170)) : Brushes.Transparent;
-        _navAbout.Background = general ? Brushes.Transparent : new SolidColorBrush(Color.FromArgb(50, 0, 159, 170));
+        _pageGeneral.Visibility = page == 0 ? Visibility.Visible : Visibility.Collapsed;
+        _pageAppearance.Visibility = page == 1 ? Visibility.Visible : Visibility.Collapsed;
+        _pageAbout.Visibility = page == 2 ? Visibility.Visible : Visibility.Collapsed;
+        var active = new SolidColorBrush(Color.FromArgb(50, 0, 159, 170));
+        _navGeneral.Background = page == 0 ? active : Brushes.Transparent;
+        _navAppearance.Background = page == 1 ? active : Brushes.Transparent;
+        _navAbout.Background = page == 2 ? active : Brushes.Transparent;
+    }
+
+    private static void RestartApp()
+    {
+        try
+        {
+            var exe = Environment.ProcessPath;
+            if (exe == null) return;
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", $"/c ping -n 3 127.0.0.1 >nul & start \"\" \"{exe}\"")
+            {
+                CreateNoWindow = true,
+                UseShellExecute = false
+            });
+            Application.Current.Shutdown();
+        }
+        catch
+        {
+            // best-effort restart only
+        }
     }
 
     private CardControl BuildAutostartCard()
@@ -215,25 +252,59 @@ public sealed class SettingsWindow : FluentWindow
         };
     }
 
-    private CardControl BuildThemeCard()
+    private CardControl BuildDesignCard()
     {
-        var combo = new System.Windows.Controls.ComboBox { MinWidth = 130, VerticalAlignment = VerticalAlignment.Center };
-        foreach (var name in new[] { "Light", "Dark", "System" })
+        var combo = new System.Windows.Controls.ComboBox { MinWidth = 150, VerticalAlignment = VerticalAlignment.Center };
+        // Stored values: 1 = Classic, 0 = Colorful. (2 = Minimal exists in code but is not offered yet.)
+        var stored = new[] { 1, 0 };
+        foreach (var name in new[] { "Classic", "Colorful" })
             combo.Items.Add(name);
-        combo.SelectedIndex = Math.Clamp(_data.Theme, 0, 2);
+        combo.SelectedIndex = Math.Max(0, Array.IndexOf(stored, _data.Design));
+        combo.SelectionChanged += (_, _) =>
+        {
+            if (combo.SelectedIndex < 0) return;
+            var design = stored[combo.SelectedIndex];
+            if (design == AppSettings.Load().Design) return;
+            AppSettings.Update(d => d.Design = design);
+            AskRestart($"The {combo.SelectedItem} design");
+        };
+
+        return new CardControl
+        {
+            Margin = new Thickness(0, 0, 0, 8),
+            Icon = new SymbolIcon { Symbol = SymbolRegular.PaintBrush24 },
+            Header = new TextBlock { Text = "Island design", FontSize = 14, VerticalAlignment = VerticalAlignment.Center },
+            Content = combo
+        };
+    }
+
+    private CardControl BuildIslandThemeCard()
+    {
+        var combo = new System.Windows.Controls.ComboBox { MinWidth = 150, VerticalAlignment = VerticalAlignment.Center };
+        foreach (var name in new[] { "Dark", "Light", "Follow Windows" })
+            combo.Items.Add(name);
+        combo.SelectedIndex = Math.Clamp(_data.IslandTheme, 0, 2);
         combo.SelectionChanged += (_, _) =>
         {
             var index = combo.SelectedIndex;
-            if (index >= 0) AppSettings.Update(d => d.Theme = index);
+            if (index < 0 || index == AppSettings.Load().IslandTheme) return;
+            AppSettings.Update(d => d.IslandTheme = index);
+            if (AppSettings.Load().Design == 2) AskRestart($"The {combo.SelectedItem.ToString()!.ToLowerInvariant()} theme");
         };
 
         return new CardControl
         {
             Margin = new Thickness(0, 0, 0, 8),
             Icon = new SymbolIcon { Symbol = SymbolRegular.WeatherMoon24 },
-            Header = new TextBlock { Text = "Update window theme", FontSize = 14, VerticalAlignment = VerticalAlignment.Center },
+            Header = new TextBlock { Text = "Minimal theme", FontSize = 14, VerticalAlignment = VerticalAlignment.Center },
             Content = combo
         };
+    }
+
+    private void AskRestart(string what)
+    {
+        var prompt = new RestartPromptWindow(what) { Owner = this };
+        if (prompt.ShowDialog() == true) RestartApp();
     }
 
     private CardControl BuildCheckUpdateCard()

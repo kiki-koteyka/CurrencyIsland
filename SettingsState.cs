@@ -17,6 +17,10 @@ public sealed class SettingsData
     public int LastTab { get; set; }
     public bool Animations { get; set; } = true;
     public int Theme { get; set; }
+    // 1 = classic design (default), 0 = colorful Soft tint design from 1.9.0, 2 = minimal
+    public int Design { get; set; } = 1;
+    // Minimal design only: 0 = dark, 1 = light, 2 = follow Windows
+    public int IslandTheme { get; set; }
     public int CentralBank { get; set; }
 }
 

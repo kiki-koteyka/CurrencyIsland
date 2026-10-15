@@ -28,7 +28,19 @@ public sealed class PositionState
     public string AnchorV { get; set; } = "Top";
 }
 
-public sealed class IslandWindow : Window
+public interface IIsland
+{
+    Action? SettingsRequested { get; set; }
+    bool ForcedHidden { get; }
+    bool IsExpanded { get; }
+    void Show();
+    void RestorePinned();
+    void ToggleForcedVisibility();
+    void ResetPosition();
+    void Retire();
+}
+
+public sealed class IslandWindow : Window, IIsland
 {
     private const double CollapsedWidth = 130;
     private const double CollapsedHeight = 34;
@@ -161,7 +173,7 @@ public sealed class IslandWindow : Window
             // Plain flat dark gradient - an earlier "glossy sheen" (a bright
             // white gradient stop at the top edge) was mistaken for a stray
             // shadow/glow artifact and is gone for good, not just muted.
-            Background = Brushes.Black,
+            Background = Skin.ShellBrush,
             BorderBrush = SoftTint.ShellRim(),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(CollapsedHeight / 2),
@@ -298,16 +310,16 @@ public sealed class IslandWindow : Window
         _stateSpinner = new MorphSpinner
         {
             Width = 40, Height = 40,
-            Foreground = new SolidColorBrush(Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent),
+            Foreground = new SolidColorBrush(Skin.Accent),
             HorizontalAlignment = HorizontalAlignment.Center
         };
         _stateText = new TextBlock
         {
             FontSize = 12, FontFamily = LabelFont, TextAlignment = TextAlignment.Center,
-            Foreground = new SolidColorBrush(Color.FromArgb(200, 235, 235, 240)),
+            Foreground = new SolidColorBrush(Skin.Ink(200)),
             HorizontalAlignment = HorizontalAlignment.Center, Visibility = Visibility.Collapsed
         };
-        var retryText = new TextBlock { Text = "Try again", FontSize = 11, FontFamily = LabelFont, Foreground = Brushes.White };
+        var retryText = new TextBlock { Text = "Try again", FontSize = 11, FontFamily = LabelFont, Foreground = Skin.InkBrush };
         _stateRetry = new Border
         {
             Background = SoftTint.Glass(30), BorderBrush = SoftTint.TileRim(), BorderThickness = new Thickness(1),
@@ -385,9 +397,9 @@ public sealed class IslandWindow : Window
             Width = 26,
             Height = 26,
             CornerRadius = new CornerRadius(13),
-            Background = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)),
+            Background = Skin.Minimal ? Brushes.Transparent : new SolidColorBrush(Skin.Wash(40)),
             BorderBrush = SoftTint.TileRim(),
-            BorderThickness = new Thickness(1),
+            BorderThickness = new Thickness(Skin.Minimal ? 0 : 1),
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Bottom,
             Margin = new Thickness(0, 0, 6, 6),
@@ -397,15 +409,15 @@ public sealed class IslandWindow : Window
             Child = new ShapePath
             {
                 Data = Geometry.Parse("M19.14,12.94c0.04-0.3,0.06-0.61,0.06-0.94c0-0.32-0.02-0.64-0.07-0.94l2.03-1.58c0.18-0.14,0.23-0.41,0.12-0.61 l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39,0.96c-0.5-0.38-1.03-0.7-1.62-0.94L14.4,2.81c-0.04-0.24-0.24-0.41-0.48-0.41 h-3.84c-0.24,0-0.43,0.17-0.47,0.41L9.25,5.35C8.66,5.59,8.12,5.92,7.63,6.29L5.24,5.33c-0.22-0.08-0.47,0-0.59,0.22L2.74,8.87 C2.62,9.08,2.66,9.34,2.86,9.48l2.03,1.58C4.84,11.36,4.8,11.69,4.8,12s0.02,0.64,0.07,0.94l-2.03,1.58 c-0.18,0.14-0.23,0.41-0.12,0.61l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39-0.96c0.5,0.38,1.03,0.7,1.62,0.94l0.36,2.54 c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44-0.17,0.47-0.41l0.36-2.54c0.59-0.24,1.13-0.56,1.62-0.94l2.39,0.96 c0.22,0.08,0.47,0,0.59-0.22l1.92-3.32c0.12-0.22,0.07-0.47-0.12-0.61L19.14,12.94z M12,15.6c-1.98,0-3.6-1.62-3.6-3.6 s1.62-3.6,3.6-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z"),
-                Fill = new SolidColorBrush(Color.FromArgb(190, 255, 255, 255)),
+                Fill = new SolidColorBrush(Skin.Ink(190)),
                 Stretch = Stretch.Uniform,
                 Width = 14, Height = 14,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             }
         };
-        settingsButton.MouseEnter += (_, _) => settingsButton.Background = new SolidColorBrush(Color.FromArgb(75, 255, 255, 255));
-        settingsButton.MouseLeave += (_, _) => settingsButton.Background = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));
+        settingsButton.MouseEnter += (_, _) => settingsButton.Background = new SolidColorBrush(Skin.Wash(75));
+        settingsButton.MouseLeave += (_, _) => settingsButton.Background = Skin.Minimal ? Brushes.Transparent : new SolidColorBrush(Skin.Wash(40));
         _settingsButton = settingsButton;
 
         _pinIcon = new ShapePath
@@ -423,7 +435,7 @@ public sealed class IslandWindow : Window
             Height = 26,
             CornerRadius = new CornerRadius(13),
             BorderBrush = SoftTint.TileRim(),
-            BorderThickness = new Thickness(1),
+            BorderThickness = new Thickness(Skin.Minimal ? 0 : 1),
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Top,
             Margin = new Thickness(0, 6, 6, 0),
@@ -473,7 +485,7 @@ public sealed class IslandWindow : Window
         {
             Width = 18, Height = 18,
             Margin = new Thickness(8, 0, 0, 0),
-            Foreground = new SolidColorBrush(Color.FromArgb(200, 255, 255, 255)),
+            Foreground = new SolidColorBrush(Skin.Ink(200)),
             VerticalAlignment = VerticalAlignment.Center,
             Visibility = Visibility.Collapsed
         };
@@ -521,13 +533,13 @@ public sealed class IslandWindow : Window
         var flag = new ContentControl { VerticalAlignment = VerticalAlignment.Center, IsTabStop = false };
         var name = new TextBlock
         {
-            FontSize = 10, FontFamily = LabelFont, Foreground = new SolidColorBrush(Color.FromArgb(170, 235, 235, 240)),
+            FontSize = 10, FontFamily = LabelFont, Foreground = new SolidColorBrush(Skin.Ink(170)),
             Margin = new Thickness(5, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center
         };
         var swap = new ShapePath
         {
             Data = Geometry.Parse("M1,3 L8,3 M6,1 L8,3 L6,5 M8,7 L1,7 M3,5 L1,7 L3,9"),
-            Stroke = new SolidColorBrush(Color.FromArgb(150, 235, 235, 240)), StrokeThickness = 1.1,
+            Stroke = new SolidColorBrush(Skin.Ink(150)), StrokeThickness = 1.1,
             StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, StrokeLineJoin = PenLineJoin.Round,
             Width = 9, Height = 10, VerticalAlignment = VerticalAlignment.Center
         };
@@ -539,15 +551,21 @@ public sealed class IslandWindow : Window
         {
             CornerRadius = new CornerRadius(10),
             Padding = new Thickness(5, 3, 7, 3),
-            Background = new SolidColorBrush(Color.FromArgb(22, 255, 255, 255)),
+            Background = Skin.Minimal ? Brushes.Transparent : new SolidColorBrush(Skin.Wash(22)),
             BorderBrush = SoftTint.TileRim(),
             BorderThickness = new Thickness(1),
             Cursor = Cursors.Hand,
             VerticalAlignment = VerticalAlignment.Center,
             Child = row
         };
-        chip.MouseEnter += (_, _) => chip.Background = new SolidColorBrush(Color.FromArgb(46, 255, 255, 255));
-        chip.MouseLeave += (_, _) => chip.Background = new SolidColorBrush(Color.FromArgb(22, 255, 255, 255));
+        if (Skin.Minimal)
+        {
+            flag.Visibility = Visibility.Collapsed;
+            name.Margin = new Thickness(4, 0, 4, 0);
+            name.FontWeight = FontWeights.SemiBold;
+        }
+        chip.MouseEnter += (_, _) => chip.Background = new SolidColorBrush(Skin.Wash(Skin.Minimal ? (byte)30 : (byte)46));
+        chip.MouseLeave += (_, _) => chip.Background = Skin.Minimal ? Brushes.Transparent : new SolidColorBrush(Skin.Wash(22));
         chip.PreviewMouseDown += (_, e) => e.Handled = true;
         chip.MouseLeftButtonUp += (_, e) => { e.Handled = true; SwitchCentralBank(); };
         flag.Content = BuildFlag(_rates.Bank);
@@ -619,13 +637,111 @@ public sealed class IslandWindow : Window
         return new Border
         {
             Width = 20, Height = 14, CornerRadius = new CornerRadius(3),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(70, 255, 255, 255)), BorderThickness = new Thickness(0.8),
+            BorderBrush = new SolidColorBrush(Skin.Ink(70)), BorderThickness = new Thickness(0.8),
             Child = root, SnapsToDevicePixels = false
         };
     }
 
+    private FrameworkElement BuildRatesViewMinimal()
+    {
+        var grid = new Grid { VerticalAlignment = VerticalAlignment.Top, HorizontalAlignment = HorizontalAlignment.Left, Width = ChartWidth, Margin = new Thickness(CenteredTabLeftMargin - 6.4, -16.8, 0, 0) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(46) });
+        for (var i = 0; i < TableDays; i++) grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(i == TableDays - 1 ? 1.3 : 1, GridUnitType.Star) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(15) });
+        for (var i = 0; i < 3; i++) grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(29) });
+
+        for (var d = 0; d < TableDays; d++)
+        {
+            var latest = d == TableDays - 1;
+            var header = new TextBlock
+            {
+                FontSize = 10, FontFamily = LabelFont,
+                Foreground = new SolidColorBrush(Skin.Ink(latest ? (byte)235 : (byte)120)),
+                FontWeight = latest ? FontWeights.SemiBold : FontWeights.Normal,
+                HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(0, 0, latest ? 2 : 6, 0)
+            };
+            Grid.SetRow(header, 0);
+            Grid.SetColumn(header, d + 1);
+            _tableHeaderTexts[d] = header;
+            grid.Children.Add(header);
+        }
+
+        var rows = new[]
+        {
+            ("USD", _usdValueTexts, _tableArrows[0]),
+            ("EUR", _eurValueTexts, _tableArrows[1]),
+            ("CNY", _cnyValueTexts, _tableArrows[2])
+        };
+        for (var r = 0; r < rows.Length; r++)
+        {
+            var (code, texts, arrow) = rows[r];
+            var row = r + 1;
+
+            var label = new TextBlock
+            {
+                Text = code, FontSize = 10.5, FontFamily = LabelFont,
+                Foreground = new SolidColorBrush(Skin.Ink(150)),
+                VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false
+            };
+            Grid.SetRow(label, row);
+            Grid.SetColumn(label, 0);
+            grid.Children.Add(label);
+
+            for (var d = 0; d < TableDays; d++)
+            {
+                var latest = d == TableDays - 1;
+                var text = texts[d] = new TextBlock
+                {
+                    FontSize = latest ? 14.5 : 12.5,
+                    FontWeight = latest ? FontWeights.Bold : FontWeights.Normal,
+                    FontFamily = ValueFont,
+                    Foreground = latest ? Skin.InkBrush : new SolidColorBrush(Skin.Ink((byte)(110 + d * 30))),
+                    VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false
+                };
+                FrameworkElement cell = text;
+                if (latest)
+                {
+                    arrow.Width = 9;
+                    arrow.HorizontalContentAlignment = HorizontalAlignment.Center;
+                    arrow.VerticalContentAlignment = VerticalAlignment.Center;
+                    arrow.VerticalAlignment = VerticalAlignment.Center;
+                    arrow.IsHitTestVisible = false;
+                    var stack = new StackPanel { Orientation = Orientation.Horizontal, IsHitTestVisible = false };
+                    stack.Children.Add(arrow);
+                    stack.Children.Add(new Border { Width = 4 });
+                    stack.Children.Add(text);
+                    cell = stack;
+                }
+                cell.HorizontalAlignment = HorizontalAlignment.Right;
+                cell.Margin = new Thickness(0, 0, latest ? 2 : 6, 0);
+                Grid.SetRow(cell, row);
+                Grid.SetColumn(cell, d + 1);
+                grid.Children.Add(cell);
+            }
+
+            var hit = new Border
+            {
+                Background = Brushes.Transparent,
+                BorderBrush = new SolidColorBrush(Skin.Hairline), BorderThickness = new Thickness(0, 1, 0, 0)
+            };
+            var veil = new SolidColorBrush(Colors.Transparent);
+            hit.Background = veil;
+            var hoverColor = Skin.Wash(16);
+            hit.MouseEnter += (_, _) => veil.BeginAnimation(SolidColorBrush.ColorProperty, new ColorAnimation(hoverColor, Motion.Span(110)) { EasingFunction = Motion.OutStrong });
+            hit.MouseLeave += (_, _) => veil.BeginAnimation(SolidColorBrush.ColorProperty, new ColorAnimation(Colors.Transparent, Motion.Span(200)) { EasingFunction = Motion.OutStrong });
+            Grid.SetRow(hit, row);
+            Grid.SetColumn(hit, 0);
+            Grid.SetColumnSpan(hit, TableDays + 1);
+            grid.Children.Add(hit);
+        }
+
+        return grid;
+    }
+
     private FrameworkElement BuildRatesView()
     {
+        if (Skin.Minimal) return BuildRatesViewMinimal();
         var grid = new Grid { VerticalAlignment = VerticalAlignment.Top, HorizontalAlignment = HorizontalAlignment.Left, Width = ChartWidth, Margin = new Thickness(CenteredTabLeftMargin - 6.4, -16.8, 0, 0) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(26) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(5) });
@@ -633,7 +749,7 @@ public sealed class IslandWindow : Window
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(15) });
         for (var i = 0; i < 3; i++) grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(29) });
 
-        var dimHeader = new SolidColorBrush(Color.FromArgb(120, 235, 235, 240));
+        var dimHeader = new SolidColorBrush(Skin.Ink(120));
         for (var d = 0; d < TableDays; d++)
         {
             var header = new TextBlock
@@ -645,7 +761,7 @@ public sealed class IslandWindow : Window
             Grid.SetColumn(header, d + 2);
             if (d == TableDays - 1)
             {
-                header.Foreground = new SolidColorBrush(Color.FromArgb(235, 255, 255, 255));
+                header.Foreground = new SolidColorBrush(Skin.Ink(235));
                 header.FontWeight = FontWeights.SemiBold;
             }
             _tableHeaderTexts[d] = header;
@@ -671,7 +787,7 @@ public sealed class IslandWindow : Window
             Child = new TextBlock
             {
                 Text = symbol, FontSize = 13, FontWeight = FontWeights.Bold, FontFamily = ValueFont,
-                Foreground = Brushes.White, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
+                Foreground = Skin.InkBrush, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
             }
         };
         Grid.SetRow(badge, row);
@@ -702,7 +818,7 @@ public sealed class IslandWindow : Window
                 FontSize = isLatest ? 14 : 12,
                 FontWeight = isLatest ? FontWeights.Bold : FontWeights.Normal,
                 FontFamily = ValueFont,
-                Foreground = isLatest ? Brushes.White : new SolidColorBrush(Color.FromArgb((byte)(120 + d * 50), 235, 235, 240)),
+                Foreground = isLatest ? Skin.InkBrush : new SolidColorBrush(Skin.Ink((byte)(120 + d * 50))),
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             };
@@ -901,8 +1017,9 @@ public sealed class IslandWindow : Window
     private const int SeriesCount = 3;
     private const double ChartWidth = 300;
     private const double ChartHeight = 116;
-    private const double ChartLabelGutter = 40; // reserved on the right for value callouts
-    private const double ChartPlotWidth = ChartWidth - ChartLabelGutter;
+    private static readonly double ChartLabelGutter = Skin.Minimal ? 56 : 40; // reserved on the right for value callouts
+    private static readonly double ChartPlotWidth = ChartWidth - ChartLabelGutter;
+    private static readonly string[] SeriesGlyphs = { "$", "€", "¥" };
 
     private readonly ShapePath[] _seriesFill = new ShapePath[SeriesCount];
     private readonly ShapePath[] _seriesLine = new ShapePath[SeriesCount];
@@ -956,7 +1073,7 @@ public sealed class IslandWindow : Window
             {
                 X1 = 0, X2 = ChartPlotWidth,
                 Y1 = ChartHeight * g / 3.0, Y2 = ChartHeight * g / 3.0,
-                Stroke = new SolidColorBrush(Color.FromArgb(18, 255, 255, 255)),
+                Stroke = new SolidColorBrush(Skin.Ink(18)),
                 StrokeThickness = 1
             });
         }
@@ -964,7 +1081,7 @@ public sealed class IslandWindow : Window
         _chartTodayGuide = new Line
         {
             Y1 = 0, Y2 = ChartHeight,
-            Stroke = new SolidColorBrush(Color.FromArgb(22, 255, 255, 255)),
+            Stroke = new SolidColorBrush(Skin.Ink(22)),
             StrokeThickness = 1,
             StrokeDashArray = new DoubleCollection { 2, 2 }
         };
@@ -973,7 +1090,7 @@ public sealed class IslandWindow : Window
         _chartHoverGuide = new Line
         {
             Y1 = 0, Y2 = ChartHeight,
-            Stroke = new SolidColorBrush(Color.FromArgb(130, 255, 255, 255)),
+            Stroke = new SolidColorBrush(Skin.Ink(130)),
             StrokeThickness = 1,
             Visibility = Visibility.Hidden,
             IsHitTestVisible = false
@@ -986,7 +1103,7 @@ public sealed class IslandWindow : Window
             var accent = accents[s];
             _seriesFill[s] = new ShapePath
             {
-                Fill = new LinearGradientBrush(
+                Fill = Skin.Minimal ? Brushes.Transparent : (Brush)new LinearGradientBrush(
                     new GradientStopCollection
                     {
                         new GradientStop(Color.FromArgb(70, accent.R, accent.G, accent.B), 0),
@@ -1006,6 +1123,11 @@ public sealed class IslandWindow : Window
                 StrokeStartLineCap = PenLineCap.Round,
                 StrokeEndLineCap = PenLineCap.Round
             };
+            if (Skin.Minimal)
+            {
+                _seriesLine[s].StrokeThickness = s == 0 ? 2.2 : 1.7;
+                if (s == 2) _seriesLine[s].StrokeDashArray = new DoubleCollection { 4, 3 };
+            }
             staticLayer.Children.Add(_seriesLine[s]);
 
             _seriesMarkers[s] = new Ellipse[ChartDays];
@@ -1015,7 +1137,7 @@ public sealed class IslandWindow : Window
                 {
                     Width = 5.5, Height = 5.5,
                     Fill = new SolidColorBrush(accent),
-                    Stroke = new SolidColorBrush(Color.FromArgb(248, 12, 12, 14)),
+                    Stroke = new SolidColorBrush(Skin.ShellA(248)),
                     StrokeThickness = 1.2,
                     RenderTransformOrigin = new Point(0.5, 0.5),
                     RenderTransform = new ScaleTransform(1, 1),
@@ -1039,7 +1161,7 @@ public sealed class IslandWindow : Window
             _hoverDots[s] = new Ellipse
             {
                 Width = 8.5, Height = 8.5, Fill = new SolidColorBrush(accents[s]),
-                Stroke = Brushes.White, StrokeThickness = 2,
+                Stroke = Skin.RingBrush, StrokeThickness = 2,
                 Visibility = Visibility.Hidden, IsHitTestVisible = false
             };
             canvas.Children.Add(_hoverDots[s]);
@@ -1080,7 +1202,7 @@ public sealed class IslandWindow : Window
             {
                 FontSize = 9,
                 FontFamily = LabelFont,
-                Foreground = new SolidColorBrush(Color.FromArgb(120, 235, 235, 240))
+                Foreground = new SolidColorBrush(Skin.Ink(120))
             };
             _chartDateLabels[i] = label;
             dateCanvas.Children.Add(label);
@@ -1089,11 +1211,11 @@ public sealed class IslandWindow : Window
         _axisBadgeText = new TextBlock
         {
             FontSize = 9, FontFamily = LabelFont, FontWeight = FontWeights.Bold,
-            Foreground = new SolidColorBrush(Color.FromRgb(17, 17, 17)), VerticalAlignment = VerticalAlignment.Center
+            Foreground = new SolidColorBrush(Skin.BadgeText), VerticalAlignment = VerticalAlignment.Center
         };
         _axisBadge = new Border
         {
-            Background = Brushes.White, CornerRadius = new CornerRadius(7.5), Height = 15,
+            Background = Skin.BadgeBrush, CornerRadius = new CornerRadius(7.5), Height = 15,
             Padding = new Thickness(6, 0, 6, 1), Visibility = Visibility.Hidden, IsHitTestVisible = false,
             Child = _axisBadgeText
         };
@@ -1125,7 +1247,7 @@ public sealed class IslandWindow : Window
     // never gets its own trend chart (see LoadCalcRangeAsync).
     private static readonly string[] CalcCodes = { "USD", "EUR", "CNY", "AED", "RUB", "TRY" };
     private static readonly string[] CalcSymbols = { "$", "€", "¥", "Dh", "₽", "₺" };
-    private Color CalcAccent(int i) => i switch { 0 => UsdAccent, 1 => EurAccent, 2 => CnyAccent, 3 => AedAccent, 5 => TryAccent, _ => Colors.White };
+    private Color CalcAccent(int i) => i switch { 0 => UsdAccent, 1 => EurAccent, 2 => CnyAccent, 3 => AedAccent, 5 => TryAccent, _ => Skin.InkColor(255) };
 
     private int _calcFromCurrency;
     private int _calcToCurrency = 4;
@@ -1174,8 +1296,8 @@ public sealed class IslandWindow : Window
         {
             Text = "1",
             FontSize = 17, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
-            Foreground = Brushes.White, Background = Brushes.Transparent, BorderThickness = new Thickness(0),
-            CaretBrush = Brushes.White, SelectionBrush = new SolidColorBrush(Color.FromArgb(90, 255, 255, 255)),
+            Foreground = Skin.InkBrush, Background = Brushes.Transparent, BorderThickness = new Thickness(0),
+            CaretBrush = Skin.InkBrush, SelectionBrush = new SolidColorBrush(Skin.Ink(90)),
             VerticalAlignment = VerticalAlignment.Center,
             Padding = new Thickness(0)
         };
@@ -1212,14 +1334,14 @@ public sealed class IslandWindow : Window
         var swapButton = new Border
         {
             Width = 20, Height = 20, CornerRadius = new CornerRadius(10),
-            Background = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)),
+            Background = new SolidColorBrush(Skin.Wash(40)),
             HorizontalAlignment = HorizontalAlignment.Center,
             Cursor = Cursors.Hand,
             Margin = new Thickness(0),
             Child = new ShapePath
             {
                 Data = Geometry.Parse("M1,4 L10,4 M7,1 L10,4 L7,7 M11,8 L2,8 M5,5 L2,8 L5,11"),
-                Stroke = new SolidColorBrush(Color.FromArgb(200, 235, 235, 240)),
+                Stroke = new SolidColorBrush(Skin.Ink(200)),
                 StrokeThickness = 1.3,
                 StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round,
                 StrokeLineJoin = PenLineJoin.Round,
@@ -1246,7 +1368,7 @@ public sealed class IslandWindow : Window
         resultRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         _calcWipe = new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(70, Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent.R, Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent.G, Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent.B)),
+            Background = new SolidColorBrush(Color.FromArgb(70, Skin.Accent.R, Skin.Accent.G, Skin.Accent.B)),
             CornerRadius = new CornerRadius(9),
             Margin = new Thickness(-8, -5, -6, -5),
             Opacity = 0,
@@ -1259,7 +1381,7 @@ public sealed class IslandWindow : Window
         _calcResultText = new TextBlock
         {
             FontSize = 17, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
-            Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis
+            Foreground = Skin.InkBrush, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis
         };
         Grid.SetColumn(_calcResultText, 0);
         _calcResultText.Cursor = Cursors.Hand;
@@ -1270,7 +1392,7 @@ public sealed class IslandWindow : Window
         _calcCopyIcon = new ShapePath
         {
             Data = Geometry.Parse(CopyIconData),
-            Fill = new SolidColorBrush(Color.FromArgb(150, 235, 235, 240)),
+            Fill = new SolidColorBrush(Skin.Ink(150)),
             Stretch = Stretch.Uniform,
             Width = 12, Height = 12,
             RenderTransformOrigin = new Point(0.5, 0.5),
@@ -1280,7 +1402,7 @@ public sealed class IslandWindow : Window
         _calcCheckIcon = new ShapePath
         {
             Data = Geometry.Parse("M2.6,7.3 L5.8,10.5 L11.4,3.8"),
-            Stroke = new SolidColorBrush(Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent),
+            Stroke = new SolidColorBrush(Skin.Accent),
             StrokeThickness = 1.6,
             StrokeStartLineCap = PenLineCap.Round,
             StrokeEndLineCap = PenLineCap.Round,
@@ -1304,7 +1426,7 @@ public sealed class IslandWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             Child = copyGlyphs
         };
-        copyButton.MouseEnter += (_, _) => copyButton.Background = new SolidColorBrush(Color.FromArgb(30, 255, 255, 255));
+        copyButton.MouseEnter += (_, _) => copyButton.Background = new SolidColorBrush(Skin.Wash(30));
         copyButton.MouseLeave += (_, _) => copyButton.Background = Brushes.Transparent;
         copyButton.PreviewMouseDown += (_, e) => e.Handled = true;
         copyButton.MouseLeftButtonUp += (_, e) => { e.Handled = true; CopyCalcResult(); };
@@ -1320,7 +1442,7 @@ public sealed class IslandWindow : Window
 
         _calcRateText = new TextBlock
         {
-            FontSize = 11, FontFamily = LabelFont, Foreground = new SolidColorBrush(Color.FromArgb(190, 235, 235, 240)),
+            FontSize = 11, FontFamily = LabelFont, Foreground = new SolidColorBrush(Skin.Ink(190)),
             Margin = new Thickness(2, 0, 0, 1)
         };
         var rateLine = new Grid();
@@ -1338,7 +1460,7 @@ public sealed class IslandWindow : Window
     private bool _rangeIsYear;
     private List<(DateTime Date, double Rate)>? _rangePoints;
     private readonly List<Point> _rangeChartPoints = new();
-    private Color _rangeLineColor = Colors.White;
+    private Color _rangeLineColor = Skin.InkColor(255);
     private Action<int> _rangeChipRefresh = null!;
     private TextBlock _rangeRateText = null!;
     private TextBlock _rangeChangeText = null!;
@@ -1402,7 +1524,7 @@ public sealed class IslandWindow : Window
         _rangeRateText = new TextBlock
         {
             FontSize = 16, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
-            Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Bottom
+            Foreground = Skin.InkBrush, VerticalAlignment = VerticalAlignment.Bottom
         };
         _rangeChangeText = new TextBlock
         {
@@ -1425,7 +1547,7 @@ public sealed class IslandWindow : Window
             {
                 X1 = 0, X2 = RangeChartWidth,
                 Y1 = RangeChartHeight * g / 3.0, Y2 = RangeChartHeight * g / 3.0,
-                Stroke = new SolidColorBrush(Color.FromArgb(18, 255, 255, 255)),
+                Stroke = new SolidColorBrush(Skin.Ink(18)),
                 StrokeThickness = 1
             });
         }
@@ -1436,24 +1558,24 @@ public sealed class IslandWindow : Window
         _rangeHoverGuide = new Line
         {
             Y1 = 0, Y2 = RangeChartHeight,
-            Stroke = new SolidColorBrush(Color.FromArgb(90, 255, 255, 255)),
+            Stroke = new SolidColorBrush(Skin.Ink(90)),
             StrokeThickness = 1, Visibility = Visibility.Hidden, IsHitTestVisible = false
         };
         _rangeCanvas.Children.Add(_rangeHoverGuide);
         _rangeEndMarker = new Ellipse
         {
             Width = 5.5, Height = 5.5, Visibility = Visibility.Hidden, IsHitTestVisible = false,
-            Stroke = new SolidColorBrush(Color.FromArgb(248, 12, 12, 14)), StrokeThickness = 1.2
+            Stroke = new SolidColorBrush(Skin.ShellA(248)), StrokeThickness = 1.2
         };
         _rangeCanvas.Children.Add(_rangeEndMarker);
         _rangeHoverMarker = new Ellipse
         {
             Width = 7, Height = 7, Visibility = Visibility.Hidden, IsHitTestVisible = false,
-            Stroke = new SolidColorBrush(Color.FromArgb(248, 12, 12, 14)), StrokeThickness = 1.2
+            Stroke = new SolidColorBrush(Skin.ShellA(248)), StrokeThickness = 1.2
         };
         _rangeCanvas.Children.Add(_rangeHoverMarker);
-        _rangeHoverPillText = new TextBlock { FontSize = 9, FontFamily = LabelFont, Foreground = new SolidColorBrush(Color.FromArgb(185, 235, 235, 240)) };
-        _rangeHoverPrice = new TextBlock { FontSize = 13, FontWeight = FontWeights.Bold, FontFamily = ValueFont, Foreground = Brushes.White, Margin = new Thickness(0, 0, 0, 2) };
+        _rangeHoverPillText = new TextBlock { FontSize = 9, FontFamily = LabelFont, Foreground = new SolidColorBrush(Skin.Ink(185)) };
+        _rangeHoverPrice = new TextBlock { FontSize = 13, FontWeight = FontWeights.Bold, FontFamily = ValueFont, Foreground = Skin.InkBrush, Margin = new Thickness(0, 0, 0, 2) };
         _rangeHoverDay = new TextBlock { FontSize = 9, FontFamily = LabelFont };
         var hoverStack = new StackPanel();
         hoverStack.Children.Add(_rangeHoverPillText);
@@ -1487,7 +1609,7 @@ public sealed class IslandWindow : Window
 
     private Border BuildRangeSegment(string label, bool isYear)
     {
-        var text = new TextBlock { Text = label, FontSize = 10, FontFamily = LabelFont, Foreground = Brushes.White, HorizontalAlignment = HorizontalAlignment.Center };
+        var text = new TextBlock { Text = label, FontSize = 10, FontFamily = LabelFont, Foreground = Skin.InkBrush, HorizontalAlignment = HorizontalAlignment.Center };
         var button = new Border
         {
             Width = RangeSegmentWidth,
@@ -1535,11 +1657,11 @@ public sealed class IslandWindow : Window
         _rangeYearButton.MouseEnter += OnRangeSegmentEnter;
         _rangeMonthButton.MouseLeave += OnRangeSegmentLeave;
         _rangeYearButton.MouseLeave += OnRangeSegmentLeave;
-        var inactiveText = new SolidColorBrush(Color.FromArgb(150, 235, 235, 240));
+        var inactiveText = new SolidColorBrush(Skin.Ink(150));
         _rangeMonthButton.Background = Brushes.Transparent;
         _rangeYearButton.Background = Brushes.Transparent;
-        ((TextBlock)_rangeMonthButton.Child).Foreground = !_rangeIsYear ? Brushes.White : inactiveText;
-        ((TextBlock)_rangeYearButton.Child).Foreground = _rangeIsYear ? Brushes.White : inactiveText;
+        ((TextBlock)_rangeMonthButton.Child).Foreground = !_rangeIsYear ? Skin.InkBrush : inactiveText;
+        ((TextBlock)_rangeYearButton.Child).Foreground = _rangeIsYear ? Skin.InkBrush : inactiveText;
     }
 
     private async Task LoadRangeAsync()
@@ -1646,7 +1768,7 @@ public sealed class IslandWindow : Window
             _rangeChartPoints.Add(new Point(width * i / (points.Count - 1), pad + (1 - (points[i].Rate - min) / range) * (height - 2 * pad)));
 
         var rising = points[^1].Rate >= points[0].Rate;
-        var lineColor = rising ? TrendUpColor : TrendDownColor;
+        var lineColor = Skin.Minimal ? Skin.InkColor(255) : rising ? TrendUpColor : TrendDownColor;
         _rangeLineColor = lineColor;
         _rangeLine.Data = BuildSmoothGeometry(_rangeChartPoints, fillToY: null);
         _rangeLine.Stroke = new SolidColorBrush(lineColor);
@@ -1654,7 +1776,7 @@ public sealed class IslandWindow : Window
         _rangeFill.Fill = new LinearGradientBrush(
             new GradientStopCollection
             {
-                new GradientStop(Color.FromArgb(70, lineColor.R, lineColor.G, lineColor.B), 0),
+                new GradientStop(Color.FromArgb(Skin.Minimal ? (byte)26 : (byte)70, lineColor.R, lineColor.G, lineColor.B), 0),
                 new GradientStop(Color.FromArgb(0, lineColor.R, lineColor.G, lineColor.B), 1)
             },
             new Point(0, 0), new Point(0, 1));
@@ -1671,7 +1793,7 @@ public sealed class IslandWindow : Window
         var arrow = delta >= 0 ? "▲" : "▼";
         _rangeRateText.Text = $"{points[^1].Rate:0.00} {BaseSign}";
         _rangeChangeText.Text = $"{arrow} {delta:+0.00;-0.00} {BaseSign}  {deltaPct:+0.0;-0.0}% past {(_rangeIsYear ? "year" : "month")}";
-        _rangeChangeText.Foreground = new SolidColorBrush(lineColor);
+        _rangeChangeText.Foreground = new SolidColorBrush(rising ? TrendUpColor : TrendDownColor);
     }
 
     private bool _rangeHoverActive;
@@ -1744,7 +1866,7 @@ public sealed class IslandWindow : Window
         var delta = rate - reference;
         var pct = reference == 0 ? 0 : Math.Abs(delta / reference * 100);
         var color = delta >= 0 ? TrendUpColor : TrendDownColor;
-        target.Inlines.Add(new System.Windows.Documents.Run($"{(gap ? "   " : "")}{label} ") { Foreground = new SolidColorBrush(Color.FromArgb(140, 235, 235, 240)) });
+        target.Inlines.Add(new System.Windows.Documents.Run($"{(gap ? "   " : "")}{label} ") { Foreground = new SolidColorBrush(Skin.Ink(140)) });
         target.Inlines.Add(new System.Windows.Documents.Run($"{(delta >= 0 ? "▲" : "▼")}{pct:0.0}%") { Foreground = new SolidColorBrush(color), FontWeight = FontWeights.SemiBold });
     }
 
@@ -1823,7 +1945,7 @@ public sealed class IslandWindow : Window
     private string _mcLastNote = "";
     private bool _mcRevealPending;
     private readonly ScaleTransform _mcResultScale = new(1, 1);
-    private readonly SolidColorBrush _mcResultBrush = new(Colors.White);
+    private readonly SolidColorBrush _mcResultBrush = new(Skin.InkSolid);
     private readonly TranslateTransform _mcNoteShift = new();
 
     private static void AnimateNewTerm(StackPanel row, bool hasSymbol)
@@ -1852,7 +1974,7 @@ public sealed class IslandWindow : Window
         _mcResultScale.BeginAnimation(ScaleTransform.ScaleXProperty, Motion.Spring(1.15, 1, Motion.Bouncy));
         _mcResultScale.BeginAnimation(ScaleTransform.ScaleYProperty, Motion.Spring(1.15, 1, Motion.Bouncy));
         _mcResultBrush.BeginAnimation(SolidColorBrush.ColorProperty,
-            new ColorAnimation(Color.FromRgb(0, 229, 242), Colors.White, Motion.Span(420)));
+            new ColorAnimation(Skin.Minimal ? Skin.Ink(140) : Color.FromRgb(0, 229, 242), Skin.InkSolid, Motion.Span(420)));
     }
 
     private void SweepClearedTokens()
@@ -1882,13 +2004,17 @@ public sealed class IslandWindow : Window
 
     private Border MakeMcButton(UIElement content, Action onClick, bool accent = false, Func<bool>? selected = null, Color? tint = null)
     {
-        var accentColor = Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent;
-        Brush Idle() => tint is { } t
+        var accentColor = Skin.Accent;
+        Brush Idle() => Skin.Minimal && accent && tint is null
+            ? new SolidColorBrush(Skin.InkSolid)
+            : tint is { } t
             ? (selected?.Invoke() == true ? SoftTint.Tint(t, 0.62, 0.34) : SoftTint.Tint(t, 0.30, 0.12))
             : selected?.Invoke() == true
                 ? new SolidColorBrush(Color.FromArgb(120, accentColor.R, accentColor.G, accentColor.B))
                 : accent ? new SolidColorBrush(Color.FromArgb(90, accentColor.R, accentColor.G, accentColor.B)) : SoftTint.Glass(30);
-        Brush Hover() => tint is { } t2
+        Brush Hover() => Skin.Minimal && accent && tint is null
+            ? new SolidColorBrush(Color.FromArgb(215, Skin.InkSolid.R, Skin.InkSolid.G, Skin.InkSolid.B))
+            : tint is { } t2
             ? SoftTint.Tint(t2, 0.50, 0.26)
             : accent || selected?.Invoke() == true
                 ? new SolidColorBrush(Color.FromArgb(140, accentColor.R, accentColor.G, accentColor.B))
@@ -1946,8 +2072,8 @@ public sealed class IslandWindow : Window
         {
             Width = 10, Height = 24,
             FontSize = 16, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
-            Foreground = Brushes.White, Background = Brushes.Transparent, BorderThickness = new Thickness(0),
-            CaretBrush = Brushes.White, SelectionBrush = new SolidColorBrush(Color.FromArgb(90, 255, 255, 255)),
+            Foreground = Skin.InkBrush, Background = Brushes.Transparent, BorderThickness = new Thickness(0),
+            CaretBrush = Skin.InkBrush, SelectionBrush = new SolidColorBrush(Skin.Ink(90)),
             VerticalAlignment = VerticalAlignment.Center,
             Padding = new Thickness(0)
         };
@@ -2013,7 +2139,7 @@ public sealed class IslandWindow : Window
         {
             Text = "Type a number, then pick its currency",
             FontSize = 12, FontFamily = LabelFont,
-            Foreground = new SolidColorBrush(Color.FromArgb(110, 235, 235, 240)),
+            Foreground = new SolidColorBrush(Skin.Ink(110)),
             VerticalAlignment = VerticalAlignment.Center,
             IsHitTestVisible = false
         };
@@ -2052,7 +2178,7 @@ public sealed class IslandWindow : Window
             label.Children.Add(symbol);
             label.Children.Add(new TextBlock
             {
-                Text = CalcCodes[idx], FontSize = 10.5, FontFamily = LabelFont, Foreground = Brushes.White,
+                Text = CalcCodes[idx], FontSize = 10.5, FontFamily = LabelFont, Foreground = Skin.InkBrush,
                 Margin = new Thickness(3, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center
             });
             _mcChips[i] = MakeMcButton(label, () => McAddCurrency(idx), selected: () => _mcShowResult && _mcResultCurrency == idx, tint: CalcAccent(idx));
@@ -2066,30 +2192,30 @@ public sealed class IslandWindow : Window
             var captured = op;
             ops.Children.Add(MakeMcButton(new TextBlock
             {
-                Text = symbol, FontSize = 15, FontFamily = ValueFont, FontWeight = FontWeights.Bold, Foreground = Brushes.White,
+                Text = symbol, FontSize = 15, FontFamily = ValueFont, FontWeight = FontWeights.Bold, Foreground = Skin.InkBrush,
                 HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 2, 0, 3)
             }, () => McAddOperator(captured)));
         }
         ops.Children.Add(MakeMcButton(new TextBlock
         {
-            Text = "%", FontSize = 14, FontFamily = ValueFont, FontWeight = FontWeights.Bold, Foreground = Brushes.White,
+            Text = "%", FontSize = 14, FontFamily = ValueFont, FontWeight = FontWeights.Bold, Foreground = Skin.InkBrush,
             HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 2, 0, 3)
         }, McAddPercent));
         ops.Children.Add(MakeMcButton(new ShapePath
         {
             Data = Geometry.Parse(BackspaceIconData),
-            Fill = new SolidColorBrush(Color.FromArgb(200, 235, 235, 240)),
+            Fill = new SolidColorBrush(Skin.Ink(200)),
             Stretch = Stretch.Uniform, Width = 15, Height = 15,
             HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 5, 0, 5)
         }, McBackspace));
         ops.Children.Add(MakeMcButton(new TextBlock
         {
-            Text = "C", FontSize = 13, FontFamily = LabelFont, Foreground = Brushes.White,
+            Text = "C", FontSize = 13, FontFamily = LabelFont, Foreground = Skin.InkBrush,
             HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 3, 0, 3)
         }, McClear));
         ops.Children.Add(MakeMcButton(new TextBlock
         {
-            Text = "=", FontSize = 16, FontFamily = ValueFont, FontWeight = FontWeights.Bold, Foreground = Brushes.White,
+            Text = "=", FontSize = 16, FontFamily = ValueFont, FontWeight = FontWeights.Bold, Foreground = Skin.Minimal ? Skin.BaseBrush : Skin.InkBrush,
             HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 2, 0, 3)
         }, McEquals, accent: true));
         ops.Margin = new Thickness(0, 3, 0, 0);
@@ -2105,7 +2231,7 @@ public sealed class IslandWindow : Window
         _mcCopyIcon = new ShapePath
         {
             Data = Geometry.Parse(CopyIconData),
-            Fill = new SolidColorBrush(Color.FromArgb(150, 235, 235, 240)),
+            Fill = new SolidColorBrush(Skin.Ink(150)),
             Stretch = Stretch.Uniform,
             Width = 12, Height = 12,
             RenderTransformOrigin = new Point(0.5, 0.5),
@@ -2115,7 +2241,7 @@ public sealed class IslandWindow : Window
         _mcCheckIcon = new ShapePath
         {
             Data = Geometry.Parse("M2.6,7.3 L5.8,10.5 L11.4,3.8"),
-            Stroke = new SolidColorBrush(Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent),
+            Stroke = new SolidColorBrush(Skin.Accent),
             StrokeThickness = 1.6,
             StrokeStartLineCap = PenLineCap.Round,
             StrokeEndLineCap = PenLineCap.Round,
@@ -2139,13 +2265,13 @@ public sealed class IslandWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             Child = mcCopyGlyphs
         };
-        _mcCopyButton.MouseEnter += (_, _) => _mcCopyButton.Background = new SolidColorBrush(Color.FromArgb(30, 255, 255, 255));
+        _mcCopyButton.MouseEnter += (_, _) => _mcCopyButton.Background = new SolidColorBrush(Skin.Wash(30));
         _mcCopyButton.MouseLeave += (_, _) => _mcCopyButton.Background = Brushes.Transparent;
         _mcCopyButton.PreviewMouseDown += (_, e) => e.Handled = true;
         _mcCopyButton.MouseLeftButtonUp += (_, e) => { e.Handled = true; McCopyResult(); };
         _mcResultHint = new TextBlock
         {
-            FontSize = 11, FontFamily = LabelFont, Foreground = new SolidColorBrush(Color.FromArgb(120, 235, 235, 240)),
+            FontSize = 11, FontFamily = LabelFont, Foreground = new SolidColorBrush(Skin.Ink(120)),
             VerticalAlignment = VerticalAlignment.Center, RenderTransform = _mcNoteShift
         };
         _mcResultRow = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
@@ -2159,7 +2285,7 @@ public sealed class IslandWindow : Window
             Height = 34,
             Margin = new Thickness(0, 4, 0, 0)
         };
-        var mcAccent = Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent;
+        var mcAccent = Skin.Accent;
         _mcWipe = new Border
         {
             Background = new SolidColorBrush(Color.FromArgb(70, mcAccent.R, mcAccent.G, mcAccent.B)),
@@ -2413,14 +2539,14 @@ public sealed class IslandWindow : Window
             row.Children.Add(new TextBlock
             {
                 Text = FormatPlain(term.Amount), FontSize = 16, FontWeight = FontWeights.SemiBold, FontFamily = ValueFont,
-                Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center
+                Foreground = Skin.InkBrush, VerticalAlignment = VerticalAlignment.Center
             });
             if (term.IsPercent)
             {
                 row.Children.Add(new TextBlock
                 {
                     Text = "%", FontSize = 16, FontWeight = FontWeights.Bold, FontFamily = ValueFont,
-                    Foreground = new SolidColorBrush(Wpf.Ui.Appearance.ApplicationAccentColorManager.SystemAccent),
+                    Foreground = new SolidColorBrush(Skin.Accent),
                     Margin = new Thickness(2, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center
                 });
             }
@@ -2438,7 +2564,7 @@ public sealed class IslandWindow : Window
         {
             Text = token is char op ? op switch { '*' => "\u00D7", '/' => "\u00F7", '-' => "\u2212", _ => "+" } : "",
             FontSize = 16, FontFamily = ValueFont, FontWeight = FontWeights.Bold,
-            Foreground = new SolidColorBrush(Color.FromArgb(170, 235, 235, 240)),
+            Foreground = new SolidColorBrush(Skin.Ink(170)),
             Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center
         };
     }
@@ -2552,7 +2678,7 @@ public sealed class IslandWindow : Window
         {
             Text = McPercentNote() ?? "pick a currency to convert",
             FontSize = 10, FontFamily = LabelFont,
-            Foreground = new SolidColorBrush(Color.FromArgb(130, 235, 235, 240)),
+            Foreground = new SolidColorBrush(Skin.Ink(130)),
             Margin = new Thickness(18, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis
         });
@@ -2617,14 +2743,14 @@ public sealed class IslandWindow : Window
     private Border BuildCurrencyChip(IReadOnlyList<int> options, int initial, Action<int> onPick, out Action<int> refresh, Func<int, bool>? available = null)
     {
         var symbolHost = new ContentControl { VerticalAlignment = VerticalAlignment.Center, IsTabStop = false };
-        var codeText = new TextBlock { FontSize = 12, FontFamily = LabelFont, Foreground = Brushes.White, Margin = new Thickness(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center };
+        var codeText = new TextBlock { FontSize = 12, FontFamily = LabelFont, Foreground = Skin.InkBrush, Margin = new Thickness(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center };
         var chevronRotate = new RotateTransform(0);
         var chevron = new ShapePath
         {
             RenderTransformOrigin = new Point(0.5, 0.5),
             RenderTransform = chevronRotate,
             Data = Geometry.Parse("M0,0 L4,4 L8,0"),
-            Stroke = new SolidColorBrush(Color.FromArgb(160, 235, 235, 240)),
+            Stroke = new SolidColorBrush(Skin.Ink(160)),
             StrokeThickness = 1.3, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round,
             Width = 8, Height = 4, VerticalAlignment = VerticalAlignment.Center
         };
@@ -2663,7 +2789,7 @@ public sealed class IslandWindow : Window
         var list = new StackPanel();
         var popupBorder = new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(252, 28, 28, 30)),
+            Background = new SolidColorBrush(Skin.BaseA(252)),
             BorderBrush = SoftTint.TileRim(),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(12),
@@ -2713,13 +2839,13 @@ public sealed class IslandWindow : Window
             itemRow.Children.Add(new TextBlock
             {
                 Text = CalcCodes[idx],
-                FontSize = 12, FontFamily = LabelFont, Foreground = Brushes.White,
+                FontSize = 12, FontFamily = LabelFont, Foreground = Skin.InkBrush,
                 Margin = new Thickness(6, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center
             });
             var item = new Border { Background = Brushes.Transparent, Cursor = Cursors.Hand, Child = itemRow, RenderTransform = new TranslateTransform() };
             items.Add(item);
-            item.MouseEnter += (_, _) => item.Background = new SolidColorBrush(Color.FromArgb(28, 255, 255, 255));
+            item.MouseEnter += (_, _) => item.Background = new SolidColorBrush(Skin.Wash(28));
             item.MouseLeave += (_, _) => item.Background = Brushes.Transparent;
             item.MouseLeftButtonUp += (_, e) =>
             {
@@ -3113,6 +3239,7 @@ public sealed class IslandWindow : Window
         _chartHoverIdx = idx;
         var p = history[idx];
         var labels = new[] { $"{p.UsdRub:0.00}", $"{p.EurRub:0.00}", $"{p.CnyRub:0.00}" };
+        if (Skin.Minimal) for (var g = 0; g < labels.Length; g++) labels[g] = $"{SeriesGlyphs[g]} {labels[g]}";
         for (var s = 0; s < SeriesCount; s++)
         {
             _hoverChipTexts[s].Text = labels[s];
@@ -3307,7 +3434,7 @@ public sealed class IslandWindow : Window
             Canvas.SetTop(markers[d], points[d].Y - markers[d].Height / 2);
         }
 
-        label.Text = $"{values[^1]:0.00}";
+        label.Text = Skin.Minimal ? $"{SeriesGlyphs[index]} {values[^1]:0.00}" : $"{values[^1]:0.00}";
         return points[^1].Y;
     }
 
@@ -3357,7 +3484,7 @@ public sealed class IslandWindow : Window
         return geometry;
     }
 
-    public Action? SettingsRequested;
+    public Action? SettingsRequested { get; set; }
 
     public void ResetPosition()
     {
@@ -3378,7 +3505,7 @@ public sealed class IslandWindow : Window
 
         for (var i = 0; i < TabCount; i++)
         {
-            var target = i == _currentTab ? Color.FromArgb(255, 255, 255, 255) : Color.FromArgb(90, 255, 255, 255);
+            var target = i == _currentTab ? Skin.Ink(255) : Skin.Ink(90);
             if (_dots[i].Fill is SolidColorBrush { IsFrozen: false } brush)
                 brush.BeginAnimation(SolidColorBrush.ColorProperty, new System.Windows.Media.Animation.ColorAnimation(target, Motion.Span(200)) { EasingFunction = Motion.OutStrong });
             else
@@ -3407,7 +3534,7 @@ public sealed class IslandWindow : Window
         Child = new ShapePath
         {
             Data = Geometry.Parse("M1,8 L4,8 L6,2.5 L9,13.5 L11,8 L15,8"),
-            Stroke = Brushes.White,
+            Stroke = Skin.InkBrush,
             StrokeThickness = 1.6,
             StrokeStartLineCap = PenLineCap.Round,
             StrokeEndLineCap = PenLineCap.Round,
@@ -3425,13 +3552,13 @@ public sealed class IslandWindow : Window
         _ => null
     };
 
-    private static readonly Color UsdAccent = Color.FromRgb(0x5F, 0xD0, 0x68);
-    private static readonly Color EurAccent = Color.FromRgb(0x5A, 0xC8, 0xFA);
-    private static readonly Color CnyAccent = Color.FromRgb(0xFF, 0xD1, 0x66);
-    private static readonly Color AedAccent = Color.FromRgb(0xC3, 0x9B, 0xFF);
-    private static readonly Color TryAccent = Color.FromRgb(0xFF, 0x4D, 0x5E);
-    private static readonly Color TrendUpColor = Color.FromRgb(0x30, 0xD1, 0x58);
-    private static readonly Color TrendDownColor = Color.FromRgb(0xFF, 0x45, 0x3A);
+    private static Color UsdAccent => Skin.Usd;
+    private static Color EurAccent => Skin.Eur;
+    private static Color CnyAccent => Skin.Cny;
+    private static Color AedAccent => Skin.Aed;
+    private static Color TryAccent => Skin.Try;
+    private static Color TrendUpColor => Skin.TrendUp;
+    private static Color TrendDownColor => Skin.TrendDown;
 
     // Plain currency glyphs ($/€/¥) are ordinary font characters, not
     // multi-color emoji, so they render fine as text and don't need a
@@ -3480,7 +3607,7 @@ public sealed class IslandWindow : Window
             return new ShapePath
             {
                 Data = Geometry.Parse("M0,4 L8,4"),
-                Stroke = new SolidColorBrush(Color.FromArgb(110, 235, 235, 240)),
+                Stroke = new SolidColorBrush(Skin.Ink(110)),
                 StrokeThickness = 1.6,
                 StrokeStartLineCap = PenLineCap.Round,
                 StrokeEndLineCap = PenLineCap.Round,
@@ -3540,7 +3667,7 @@ public sealed class IslandWindow : Window
         chip.Children.Add(new TextBlock
         {
             Text = value,
-            Foreground = Brushes.White,
+            Foreground = Skin.InkBrush,
             FontSize = 15,
             FontWeight = FontWeights.SemiBold,
             FontFamily = ValueFont,
@@ -3562,7 +3689,7 @@ public sealed class IslandWindow : Window
             return new TextBlock
             {
                 Text = BaseSign,
-                Foreground = Brushes.White,
+                Foreground = Skin.InkBrush,
                 FontSize = 16,
                 FontWeight = FontWeights.SemiBold,
                 FontFamily = LabelFont
@@ -3610,6 +3737,8 @@ public sealed class IslandWindow : Window
     }
 
     public bool ForcedHidden => _forcedHidden;
+
+    public bool IsExpanded => _isExpanded;
 
     public void Retire()
     {
@@ -4158,13 +4287,26 @@ public sealed class IslandWindow : Window
         _pinScale.ScaleX = _pinScale.ScaleY = 1 + 0.08 * m;
         _pinRotate.Angle = 45 * (1 - m);
 
-        var idleAlpha = _pinHover ? 75 : 40;
-        _pinBgBrush.Color = Color.FromArgb(
-            (byte)(idleAlpha + (255 - idleAlpha) * t),
-            (byte)(255 + (accent.R - 255) * t),
-            (byte)(255 + (accent.G - 255) * t),
-            (byte)(255 + (accent.B - 255) * t));
-        _pinIconBrush.Color = Color.FromArgb((byte)(190 + 65 * t), 255, 255, 255);
+        if (Skin.Minimal)
+        {
+            var ink = Skin.InkColor(255);
+            var baseColor = Skin.Base;
+            var idle = _pinHover ? 26 : 0;
+            _pinBgBrush.Color = Color.FromArgb((byte)(idle + (255 - idle) * t), ink.R, ink.G, ink.B);
+            var rest = Skin.Ink(150);
+            _pinIconBrush.Color = Color.FromArgb(255,
+                (byte)(rest.R + (baseColor.R - rest.R) * t), (byte)(rest.G + (baseColor.G - rest.G) * t), (byte)(rest.B + (baseColor.B - rest.B) * t));
+        }
+        else
+        {
+            var idleAlpha = _pinHover ? 75 : 40;
+            _pinBgBrush.Color = Color.FromArgb(
+                (byte)(idleAlpha + (255 - idleAlpha) * t),
+                (byte)(255 + (accent.R - 255) * t),
+                (byte)(255 + (accent.G - 255) * t),
+                (byte)(255 + (accent.B - 255) * t));
+            _pinIconBrush.Color = Color.FromArgb((byte)(190 + 65 * t), 255, 255, 255);
+        }
         if (!ReferenceEquals(_pinButton.Background, _pinBgBrush)) _pinButton.Background = _pinBgBrush;
         if (!ReferenceEquals(_pinIcon.Fill, _pinIconBrush)) _pinIcon.Fill = _pinIconBrush;
     }
@@ -4688,7 +4830,7 @@ internal sealed class CornerRadiusAnimation : AnimationTimeline
 public sealed class App : Application
 {
     private Forms.NotifyIcon? _trayIcon;
-    private IslandWindow? _window;
+    private IIsland? _window;
     private SettingsWindow? _settingsWindow;
     private UpdatePromptWindow? _updatePromptWindow;
     private string? _updateNotifiedVersion;
@@ -4710,8 +4852,12 @@ public sealed class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        // The island is a small layered window, so software rendering costs nothing visible and
+        // spares the GPU driver stack: about a third less private memory and no idle CPU.
+        if (Environment.GetEnvironmentVariable("CURRENCYISLAND_HARDWARE") != "1") RenderOptions.ProcessRenderMode = System.Windows.Interop.RenderMode.SoftwareOnly;
         base.OnStartup(e);
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
+        StartMemoryTrim();
 
         if (!e.Args.Contains("--allow-multiple") && !AcquireSingleInstance(e.Args.Contains("--updated")))
         {
@@ -4743,7 +4889,7 @@ public sealed class App : Application
         SelfUpdater.Log($"app start v{AppVersion.Current} path={Environment.ProcessPath}");
         CheckUrgentUpdateFlag();
 
-        _window = new IslandWindow();
+        _window = CreateIsland();
         _window.SettingsRequested = OpenSettings;
         _window.Show();
         _window.RestorePinned();
@@ -4974,6 +5120,33 @@ public sealed class App : Application
         }));
     }
 
+    [System.Runtime.InteropServices.DllImport("psapi.dll")]
+    private static extern bool EmptyWorkingSet(IntPtr process);
+
+    // While the island sits collapsed, hand the pages it is not using back to Windows.
+    // They fault back in on demand, so nothing is lost; the Task Manager figure just
+    // stops reflecting memory that was only touched once at startup.
+    private void StartMemoryTrim()
+    {
+        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(45) };
+        timer.Tick += (_, _) =>
+        {
+            if (_window is not { IsExpanded: false }) return;
+            try
+            {
+                GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+                EmptyWorkingSet(System.Diagnostics.Process.GetCurrentProcess().Handle);
+            }
+            catch
+            {
+                // best-effort only
+            }
+        };
+        timer.Start();
+    }
+
+    private static IIsland CreateIsland() => AppSettings.Load().Design == 1 ? new ClassicIslandWindow() : new IslandWindow();
+
     private void RecreateIslandWindow()
     {
         if (_window == null) return;
@@ -4983,7 +5156,8 @@ public sealed class App : Application
         var old = _window;
         var hidden = old.ForcedHidden;
 
-        var fresh = new IslandWindow { SettingsRequested = OpenSettings };
+        var fresh = CreateIsland();
+        fresh.SettingsRequested = OpenSettings;
         _window = fresh;
         fresh.Show();
         fresh.RestorePinned();
