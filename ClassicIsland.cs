@@ -28,7 +28,7 @@ public sealed class ClassicIslandWindow : Window, IIsland
     // The fixed OS window is sized once for whichever tab needs the most
     // room (the chart tab). Content is vertically centered within it, so
     // this has to track whatever TabExpandedHeight's own max actually is.
-    private const double ExpandedHeight = 178;
+    private const double ExpandedHeight = 206;
 
     // Per-tab expanded heights - the table only needs ~95px of content, the
     // chart needs ~170px, the calculator (two amount rows + swap + rate
@@ -38,7 +38,7 @@ public sealed class ClassicIslandWindow : Window, IIsland
     // pre-expand corner/growth-alignment math (deciding which corner to
     // grow from before anything has actually resized) so that math never
     // under-estimates how much room the pill might need.
-    private static readonly double[] TabExpandedHeight = { 138, 178, 152, 168, 168 };
+    private static readonly double[] TabExpandedHeight = { 152, 200, 166, 190, 206 };
     private const double EdgeMargin = 0;
     private const double TopEdgeMargin = 0;
     private const double BottomEdgeMargin = 0;
@@ -102,6 +102,7 @@ public sealed class ClassicIslandWindow : Window, IIsland
     private bool _tabPersistenceReady;
     private int _currentTab;
     private bool _tabAnimating;
+    private readonly TranslateTransform _hostShift = new();
     private bool _forcedHidden;
     private bool _isExpanded;
     private bool _dragging;
@@ -289,6 +290,8 @@ public sealed class ClassicIslandWindow : Window, IIsland
     private readonly DispatcherTimer _currencyRefreshTimer;
     private readonly DispatcherTimer _hoverPollTimer;
 
+    private const double HeaderRowHeight = 22;
+
     private void BuildInnerContent()
     {
         // Top/bottom margins equal (10/10) - they used to be 10/6, and with
@@ -300,13 +303,27 @@ public sealed class ClassicIslandWindow : Window, IIsland
         _content = root;
         root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(HeaderRowHeight) });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
         _tabHost.HorizontalContentAlignment = HorizontalAlignment.Left;
         _tabHost.VerticalContentAlignment = VerticalAlignment.Center;
+        _tabHost.RenderTransform = _hostShift;
         Grid.SetColumn(_tabHost, 0);
-        Grid.SetRow(_tabHost, 0);
+        Grid.SetRow(_tabHost, 1);
         root.Children.Add(_tabHost);
+
+        // One central-bank switch, in the same top-left spot on every tab.
+        var headerChip = BuildBankChip();
+        headerChip.Height = 26;
+        headerChip.CornerRadius = new CornerRadius(13);
+        headerChip.Padding = new Thickness(7, 0, 10, 0);
+        headerChip.HorizontalAlignment = HorizontalAlignment.Left;
+        headerChip.VerticalAlignment = VerticalAlignment.Top;
+        headerChip.Margin = new Thickness(-8, -4, 0, 0);
+        Grid.SetColumn(headerChip, 0);
+        Grid.SetRow(headerChip, 0);
+        root.Children.Add(headerChip);
 
         // A Grid of fixed-height rows, not a StackPanel - at 125% DPI, 6 DIP
         // dots are 7.5 physical pixels, a fractional value that can't land
@@ -342,6 +359,7 @@ public sealed class ClassicIslandWindow : Window, IIsland
         }
         Grid.SetColumn(dotsPanel, 1);
         Grid.SetRow(dotsPanel, 0);
+        Grid.SetRowSpan(dotsPanel, 2);
         root.Children.Add(dotsPanel);
 
         // Lives directly in shellRoot (below), NOT in root - root's own
@@ -582,44 +600,6 @@ public sealed class ClassicIslandWindow : Window, IIsland
         for (var i = 0; i < 4; i++) grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
         var dimHeader = new SolidColorBrush(Color.FromArgb(120, 235, 235, 240));
-        _bankCaptionText = new TextBlock
-        {
-            FontSize = 10, FontFamily = LabelFont, Foreground = dimHeader,
-            Margin = new Thickness(6, 0, 5, 0), VerticalAlignment = VerticalAlignment.Center
-        };
-        _bankCaptionFlag = new ContentControl { VerticalAlignment = VerticalAlignment.Center, IsTabStop = false };
-        var swapGlyph = new ShapePath
-        {
-            Data = Geometry.Parse("M1,3 L8,3 M6,1 L8,3 L6,5 M8,7 L1,7 M3,5 L1,7 L3,9"),
-            Stroke = dimHeader, StrokeThickness = 1.1,
-            StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, StrokeLineJoin = PenLineJoin.Round,
-            Width = 9, Height = 10, VerticalAlignment = VerticalAlignment.Center
-        };
-        var captionRow = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        captionRow.Children.Add(_bankCaptionFlag);
-        captionRow.Children.Add(_bankCaptionText);
-        captionRow.Children.Add(swapGlyph);
-        var captionChip = new Border
-        {
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(5, 2, 7, 2),
-            Margin = new Thickness(-5, 0, 0, 1),
-            Background = Brushes.Transparent,
-            Cursor = Cursors.Hand,
-            VerticalAlignment = VerticalAlignment.Bottom,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Child = captionRow
-        };
-        captionChip.MouseEnter += (_, _) => captionChip.Background = new SolidColorBrush(Color.FromArgb(34, 255, 255, 255));
-        captionChip.MouseLeave += (_, _) => captionChip.Background = Brushes.Transparent;
-        captionChip.PreviewMouseDown += (_, e) => e.Handled = true;
-        captionChip.MouseLeftButtonUp += (_, e) => { e.Handled = true; SwitchCentralBank(); };
-        Grid.SetRow(captionChip, 0);
-        Grid.SetColumn(captionChip, 0);
-        Grid.SetColumnSpan(captionChip, 2);
-        grid.Children.Add(captionChip);
-        RefreshBankIndicators();
-
         for (var d = 0; d < TableDays; d++)
         {
             var header = new TextBlock
@@ -841,10 +821,12 @@ public sealed class ClassicIslandWindow : Window, IIsland
             return;
         }
 
+        var firstData = _latestHistory == null;
         _historyFetchedAt = DateTime.UtcNow;
         _latestHistory = points;
         _historyByBank[source.Bank] = (_historyFetchedAt, points);
         ApplyHistoryToViews();
+        if (firstData && _currentTab == ChartTabIndex && _isExpanded) RevealChart();
     }
 
     private void SwitchCentralBank()
@@ -1015,10 +997,6 @@ public sealed class ClassicIslandWindow : Window, IIsland
         legendRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         legend.VerticalAlignment = VerticalAlignment.Center;
         legendRow.Children.Add(legend);
-        var chartBankChip = BuildBankChip();
-        chartBankChip.Margin = new Thickness(0, -3, 0, 4);
-        Grid.SetColumn(chartBankChip, 1);
-        legendRow.Children.Add(chartBankChip);
         Grid.SetRow(legendRow, 0);
         root.Children.Add(legendRow);
 
@@ -1196,6 +1174,7 @@ public sealed class ClassicIslandWindow : Window, IIsland
         canvas.MouseMove += OnChartCanvasMouseMove;
         canvas.MouseLeave += (_, _) =>
         {
+            EndHoverGlide();
             _chartHoverGuide.Visibility = Visibility.Hidden;
             _chartTooltip.Visibility = Visibility.Hidden;
             foreach (var chip in _hoverChips) chip.Visibility = Visibility.Hidden;
@@ -1443,10 +1422,6 @@ public sealed class ClassicIslandWindow : Window, IIsland
         rateLine.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         _calcRateText.VerticalAlignment = VerticalAlignment.Center;
         rateLine.Children.Add(_calcRateText);
-        var swapperBankChip = BuildBankChip();
-        swapperBankChip.Margin = new Thickness(0, 0, 0, 0);
-        Grid.SetColumn(swapperBankChip, 1);
-        rateLine.Children.Add(swapperBankChip);
         cardContent.Children.Add(rateLine);
 
         root.Children.Add(card);
@@ -1520,11 +1495,6 @@ public sealed class ClassicIslandWindow : Window, IIsland
         rateRow.Children.Add(_rangeChangeText);
         var rateGrid = new Grid();
         rateGrid.Children.Add(rateRow);
-        var rangeBankChip = BuildBankChip();
-        rangeBankChip.HorizontalAlignment = HorizontalAlignment.Right;
-        rangeBankChip.VerticalAlignment = VerticalAlignment.Bottom;
-        rangeBankChip.Margin = new Thickness(0, 0, 0, 3);
-        rateGrid.Children.Add(rangeBankChip);
         root.Children.Add(rateGrid);
 
         var chartHost = new Grid { Height = RangeChartHeight, Width = RangeChartWidth, HorizontalAlignment = HorizontalAlignment.Left };
@@ -1740,8 +1710,96 @@ public sealed class ClassicIslandWindow : Window, IIsland
         _rangeChangeText.Foreground = new SolidColorBrush(lineColor);
     }
 
+    // Eases a handful of values toward their targets frame by frame: each frame
+    // closes a fixed share of the remaining distance, so moving the cursor
+    // again simply retargets without a restart.
+    private sealed class Glider
+    {
+        private const double TimeConstantMs = 42;
+        private readonly double[] _current;
+        private readonly double[] _target;
+        private readonly Action<double[]> _apply;
+        private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+        private bool _active;
+        private bool _hooked;
+        private double _last;
+
+        public Glider(int count, Action<double[]> apply)
+        {
+            _current = new double[count];
+            _target = new double[count];
+            _apply = apply;
+        }
+
+        public void Set(int index, double value) => _target[index] = value;
+
+        public void Go()
+        {
+            if (!_active || !Motion.Enabled)
+            {
+                _active = true;
+                Array.Copy(_target, _current, _target.Length);
+                _apply(_current);
+                return;
+            }
+
+            if (_hooked) return;
+            _hooked = true;
+            _last = _clock.Elapsed.TotalMilliseconds;
+            CompositionTarget.Rendering += OnFrame;
+        }
+
+        public void Reset()
+        {
+            _active = false;
+            Unhook();
+        }
+
+        private void Unhook()
+        {
+            if (!_hooked) return;
+            _hooked = false;
+            CompositionTarget.Rendering -= OnFrame;
+        }
+
+        private void OnFrame(object? sender, EventArgs e)
+        {
+            var now = _clock.Elapsed.TotalMilliseconds;
+            var k = 1 - Math.Exp(-Math.Min(now - _last, 50) / TimeConstantMs);
+            _last = now;
+
+            var moving = false;
+            for (var i = 0; i < _current.Length; i++)
+            {
+                var delta = _target[i] - _current[i];
+                if (Math.Abs(delta) < 0.05) _current[i] = _target[i];
+                else
+                {
+                    _current[i] += delta * k;
+                    moving = true;
+                }
+            }
+
+            _apply(_current);
+            if (!moving) Unhook();
+        }
+    }
+
+    private Glider? _rangeGlide;
+
+    private void ApplyRangeGlide(double[] v)
+    {
+        _rangeHoverGuide.X1 = v[0];
+        _rangeHoverGuide.X2 = v[0];
+        Canvas.SetLeft(_rangeHoverMarker, v[1] - 3.5);
+        Canvas.SetTop(_rangeHoverMarker, v[2] - 3.5);
+        Canvas.SetLeft(_rangeHoverPill, v[3]);
+        Canvas.SetTop(_rangeHoverPill, v[4]);
+    }
+
     private void HideRangeHover()
     {
+        _rangeGlide?.Reset();
         _rangeHoverGuide.Visibility = Visibility.Hidden;
         _rangeHoverMarker.Visibility = Visibility.Hidden;
         _rangeHoverPill.Visibility = Visibility.Hidden;
@@ -1755,13 +1813,10 @@ public sealed class ClassicIslandWindow : Window, IIsland
         var idx = Math.Clamp((int)Math.Round(e.GetPosition(_rangeCanvas).X / (RangeChartWidth / (n - 1))), 0, n - 1);
         var pt = _rangeChartPoints[idx];
 
-        _rangeHoverGuide.X1 = pt.X;
-        _rangeHoverGuide.X2 = pt.X;
+        _rangeGlide ??= new Glider(5, ApplyRangeGlide);
         _rangeHoverGuide.Visibility = Visibility.Visible;
 
         _rangeHoverMarker.Fill = new SolidColorBrush(_rangeLineColor);
-        Canvas.SetLeft(_rangeHoverMarker, pt.X - 3.5);
-        Canvas.SetTop(_rangeHoverMarker, pt.Y - 3.5);
         _rangeHoverMarker.Visibility = Visibility.Visible;
 
         var date = points[idx].Date.ToString("d MMM yyyy", System.Globalization.CultureInfo.GetCultureInfo("en-US"));
@@ -1769,8 +1824,12 @@ public sealed class ClassicIslandWindow : Window, IIsland
         _rangeHoverPill.Visibility = Visibility.Visible;
         _rangeHoverPill.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         var size = _rangeHoverPill.DesiredSize;
-        Canvas.SetLeft(_rangeHoverPill, Math.Clamp(pt.X - size.Width / 2, 0, RangeChartWidth - size.Width));
-        Canvas.SetTop(_rangeHoverPill, pt.Y < size.Height + 8 ? RangeChartHeight - size.Height : 0);
+        _rangeGlide.Set(0, pt.X);
+        _rangeGlide.Set(1, pt.X);
+        _rangeGlide.Set(2, pt.Y);
+        _rangeGlide.Set(3, Math.Clamp(pt.X - size.Width / 2, 0, RangeChartWidth - size.Width));
+        _rangeGlide.Set(4, pt.Y < size.Height + 8 ? RangeChartHeight - size.Height : 0);
+        _rangeGlide.Go();
     }
 
     private sealed class McTerm
@@ -2185,16 +2244,12 @@ public sealed class ClassicIslandWindow : Window, IIsland
             RenderTransformOrigin = new Point(0, 0.5),
             RenderTransform = _mcWipeScale
         };
-        var resultGrid = new Grid { Margin = new Thickness(0, 0, 72, 0) };
+        var resultGrid = new Grid();
         resultGrid.Children.Add(_mcResultHint);
         resultGrid.Children.Add(_mcResultRow);
         var resultOuter = new Grid();
         resultOuter.Children.Add(_mcWipe);
         resultOuter.Children.Add(resultGrid);
-        var mcBankChip = BuildBankChip();
-        mcBankChip.HorizontalAlignment = HorizontalAlignment.Right;
-        mcBankChip.Margin = new Thickness(0, 0, -2, 0);
-        resultOuter.Children.Add(mcBankChip);
         resultField.Child = resultOuter;
         root.Children.Add(resultField);
 
@@ -3100,8 +3155,7 @@ public sealed class ClassicIslandWindow : Window, IIsland
         idx = Math.Clamp(idx, 0, n - 1);
 
         var x = idx * step;
-        _chartHoverGuide.X1 = x;
-        _chartHoverGuide.X2 = x;
+        _guideTargetX = x;
         _chartHoverGuide.Visibility = Visibility.Visible;
         SetHoveredMarkerIndex(idx);
 
@@ -3111,6 +3165,7 @@ public sealed class ClassicIslandWindow : Window, IIsland
         {
             _chartTooltip.Visibility = Visibility.Hidden;
             ShowHoverChips(idx, new[] { $"{p.UsdRub:0.00}", $"{p.EurRub:0.00}", $"{p.CnyRub:0.00}" });
+            BeginHoverGlide();
             return;
         }
 
@@ -3126,6 +3181,110 @@ public sealed class ClassicIslandWindow : Window, IIsland
         var left = Math.Clamp(x - tipWidth / 2, 0, ChartWidth - tipWidth);
         Canvas.SetLeft(_chartTooltip, left);
         Canvas.SetTop(_chartTooltip, 2);
+        BeginHoverGlide();
+    }
+
+    // The guide line and the value chips glide to the next day instead of
+    // jumping: every frame each one closes a fixed share of its remaining
+    // distance, which gives a soft ease-out that also retargets cleanly when
+    // the cursor keeps moving.
+    private bool _hoverGlideActive;
+    private bool _hoverFrameHooked;
+    private double _guideX, _guideTargetX;
+    private double _lastGlideMs;
+    private readonly System.Diagnostics.Stopwatch _glideClock = System.Diagnostics.Stopwatch.StartNew();
+    private readonly double[] _chipLeft = new double[SeriesCount];
+    private readonly double[] _chipTop = new double[SeriesCount];
+    private readonly double[] _chipTargetLeft = new double[SeriesCount];
+    private readonly double[] _chipTargetTop = new double[SeriesCount];
+    private const double GlideTimeConstantMs = 42;
+
+    private void BeginHoverGlide()
+    {
+        if (!_hoverGlideActive)
+        {
+            _hoverGlideActive = true;
+            _guideX = _guideTargetX;
+            for (var s = 0; s < SeriesCount; s++)
+            {
+                _chipLeft[s] = _chipTargetLeft[s];
+                _chipTop[s] = _chipTargetTop[s];
+            }
+            ApplyGlide();
+            return;
+        }
+
+        if (!Motion.Enabled)
+        {
+            _guideX = _guideTargetX;
+            for (var s = 0; s < SeriesCount; s++)
+            {
+                _chipLeft[s] = _chipTargetLeft[s];
+                _chipTop[s] = _chipTargetTop[s];
+            }
+            ApplyGlide();
+            return;
+        }
+
+        if (_hoverFrameHooked) return;
+        _hoverFrameHooked = true;
+        _lastGlideMs = _glideClock.Elapsed.TotalMilliseconds;
+        CompositionTarget.Rendering += OnHoverGlideFrame;
+    }
+
+    private void OnHoverGlideFrame(object? sender, EventArgs e)
+    {
+        var now = _glideClock.Elapsed.TotalMilliseconds;
+        var dt = Math.Min(now - _lastGlideMs, 50);
+        _lastGlideMs = now;
+        var k = 1 - Math.Exp(-dt / GlideTimeConstantMs);
+
+        var moving = Approach(ref _guideX, _guideTargetX, k);
+        for (var s = 0; s < SeriesCount; s++)
+        {
+            moving |= Approach(ref _chipLeft[s], _chipTargetLeft[s], k);
+            moving |= Approach(ref _chipTop[s], _chipTargetTop[s], k);
+        }
+
+        ApplyGlide();
+        if (!moving) StopHoverGlideFrames();
+    }
+
+    private static bool Approach(ref double current, double target, double k)
+    {
+        var delta = target - current;
+        if (Math.Abs(delta) < 0.05)
+        {
+            current = target;
+            return false;
+        }
+
+        current += delta * k;
+        return true;
+    }
+
+    private void ApplyGlide()
+    {
+        _chartHoverGuide.X1 = _guideX;
+        _chartHoverGuide.X2 = _guideX;
+        for (var s = 0; s < SeriesCount; s++)
+        {
+            Canvas.SetLeft(_hoverChips[s], _chipLeft[s]);
+            Canvas.SetTop(_hoverChips[s], _chipTop[s]);
+        }
+    }
+
+    private void StopHoverGlideFrames()
+    {
+        if (!_hoverFrameHooked) return;
+        _hoverFrameHooked = false;
+        CompositionTarget.Rendering -= OnHoverGlideFrame;
+    }
+
+    private void EndHoverGlide()
+    {
+        _hoverGlideActive = false;
+        StopHoverGlideFrames();
     }
 
     // Variant E: a small pill in each series' own color sitting just above
@@ -3191,8 +3350,8 @@ public sealed class ClassicIslandWindow : Window, IIsland
 
         foreach (var s in order)
         {
-            Canvas.SetLeft(_hoverChips[s], Math.Clamp(x - widths[s] / 2, 0, ChartWidth - widths[s]));
-            Canvas.SetTop(_hoverChips[s], tops[s]);
+            _chipTargetLeft[s] = Math.Clamp(x - widths[s] / 2, 0, ChartWidth - widths[s]);
+            _chipTargetTop[s] = tops[s];
         }
     }
 
@@ -3576,23 +3735,59 @@ public sealed class ClassicIslandWindow : Window, IIsland
         var newIndex = ((index % TabCount) + TabCount) % TabCount;
         if (newIndex == _currentTab) return;
 
-        _tabAnimating = true;
-        var fadeOut = new DoubleAnimation(_tabHost.Opacity, 0, TimeSpan.FromMilliseconds(90))
-        {
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
-        };
-        fadeOut.Completed += (_, _) =>
+        CrossfadeTab(() =>
         {
             SetTab(newIndex);
             ResizeForTab(newIndex);
-            var fadeIn = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140))
-            {
-                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-            };
+            if (newIndex == ChartTabIndex) RevealChart();
+        });
+    }
+
+    // The outgoing tab fades and lifts a few pixels, the incoming one fades in
+    // while settling back down - one continuous motion instead of a swap.
+    private void CrossfadeTab(Action swap)
+    {
+        if (_tabAnimating) return;
+        _tabAnimating = true;
+
+        var fadeOut = Motion.Tween(_tabHost.Opacity, 0, 90, Motion.OutStrong);
+        fadeOut.Completed += (_, _) =>
+        {
+            swap();
+            var fadeIn = Motion.Tween(0, 1, 200, Motion.OutStrong);
             fadeIn.Completed += (_, _) => _tabAnimating = false;
+            _hostShift.BeginAnimation(TranslateTransform.YProperty, Motion.Tween(6, 0, 220, Motion.OutStrong));
             _tabHost.BeginAnimation(OpacityProperty, fadeIn);
         };
+        _hostShift.BeginAnimation(TranslateTransform.YProperty, Motion.Tween(_hostShift.Y, -3, 90, Motion.OutStrong));
         _tabHost.BeginAnimation(OpacityProperty, fadeOut);
+        Motion.Settle(700, () => _tabAnimating = false);
+    }
+
+    // The chart lines draw in from left to right instead of appearing at once,
+    // both when the tab opens and when fresh data lands.
+    private void RevealChart()
+    {
+        if (!Motion.Enabled) return;
+
+        var shift = new TranslateTransform(-0.2, 0);
+        var mask = new LinearGradientBrush(Colors.Black, Colors.Transparent, new Point(0, 0.5), new Point(0.2, 0.5))
+        {
+            RelativeTransform = shift
+        };
+        _chartCanvas.OpacityMask = mask;
+
+        var sweep = Motion.Tween(-0.2, 1.0, 650, new CubicEase { EasingMode = EasingMode.EaseInOut });
+        sweep.Completed += (_, _) =>
+        {
+            if (ReferenceEquals(_chartCanvas.OpacityMask, mask)) _chartCanvas.OpacityMask = null;
+        };
+        shift.BeginAnimation(TranslateTransform.XProperty, sweep);
+
+        Motion.Settle(900, () =>
+        {
+            if (ReferenceEquals(_chartCanvas.OpacityMask, mask)) _chartCanvas.OpacityMask = null;
+        });
     }
 
     // PointToScreen/PointFromScreen return physical pixels while Window.Left/
